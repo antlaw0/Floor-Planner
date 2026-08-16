@@ -90,20 +90,30 @@ header p {
 .app {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(20rem, 25rem);
-  min-height: calc(100vh - 4.5rem);
+  height: var(--app-available-height, calc(100dvh - 4.5rem));
+  min-height: 0;
+  overflow: hidden;
 } /* closes app */
 
 .workspace {
   min-width: 0;
-  padding: 0.65rem;
-  overflow: auto;
+  min-height: 0;
+  height: 100%;
+  padding: 0.55rem;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 } /* closes workspace */
 
 .sidebar {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
   border-left: 1px solid #666;
-  padding: 0.65rem;
-  overflow: auto;
-  max-height: calc(100vh - 4.5rem);
+  padding: 0.55rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   background: var(--panel);
 } /* closes sidebar */
 
@@ -189,11 +199,12 @@ label {
 } /* closes hidden file input */
 
 .workspace-toolbar {
+  flex: 0 0 auto;
   display: flex;
-  gap: 0.45rem;
+  gap: 0.4rem;
   flex-wrap: wrap;
   align-items: center;
-  margin: 0 auto 0.5rem;
+  margin: 0 auto 0.4rem;
   width: min(100%, 1100px);
 } /* closes workspace toolbar */
 
@@ -210,18 +221,26 @@ label {
 } /* closes zoom control input */
 
 .stage-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
   overflow: auto;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
   border: 1px solid #444;
   border-radius: 9px;
   background: #000;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
 } /* closes stage viewport */
 
 .stage-wrap {
-  width: min(100%, 1100px);
-  min-width: 320px;
-  margin: 0 auto;
+  flex: 0 0 auto;
+  width: 320px;
+  height: calc(320px * 1900 / 2020);
+  min-width: 1px;
+  margin: 0;
   position: relative;
   background: #000;
   border: 1px solid #888;
@@ -312,69 +331,199 @@ label {
   display: none;
 } /* closes mobile actions */
 
-@media (max-width: 850px) {
-  header {
-    position: sticky;
-    top: 0;
-    z-index: 30;
-  } /* closes mobile header */
+.control-jumpbar {
+  position: sticky;
+  top: -0.55rem;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.3rem;
+  margin: -0.55rem -0.55rem 0.55rem;
+  padding: 0.45rem 0.45rem 0.5rem;
+  background: rgba(0, 0, 0, 0.97);
+  border-bottom: 1px solid #555;
+} /* closes control jumpbar */
 
-  header p {
-    display: none;
-  } /* closes mobile header paragraph */
+.control-jumpbar button {
+  min-width: 0;
+  min-height: 42px;
+  padding: 0.35rem 0.25rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+} /* closes control jumpbar button */
 
-  .app {
-    display: flex;
-    flex-direction: column;
-  } /* closes mobile app */
+body[data-layout="fold-portrait"] header,
+body[data-layout="fold-landscape"] header,
+body[data-layout="phone"] header {
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
+} /* closes compact adaptive header */
 
-  .workspace {
-    order: 1;
-    padding: 0.4rem;
-  } /* closes mobile workspace */
+body[data-layout="fold-portrait"] header h1,
+body[data-layout="fold-landscape"] header h1,
+body[data-layout="phone"] header h1 {
+  font-size: 1.05rem;
+} /* closes compact adaptive heading */
 
-  .sidebar {
-    order: 2;
-    max-height: none;
-    border-left: 0;
-    border-top: 1px solid #666;
-    padding: 0.55rem 0.55rem 5.8rem;
-  } /* closes mobile sidebar */
+body[data-layout="fold-portrait"] header p,
+body[data-layout="fold-landscape"] header p,
+body[data-layout="phone"] header p {
+  display: none;
+} /* closes compact adaptive header text */
 
-  .workspace-toolbar {
-    position: sticky;
-    top: 3rem;
-    z-index: 25;
-    background: #000;
-    padding: 0.25rem 0;
-  } /* closes mobile toolbar */
+body[data-layout="fold-portrait"] .app {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 56%) minmax(0, 44%);
+} /* closes fold portrait app */
 
-  .stage-viewport {
-    max-height: 68vh;
-  } /* closes mobile stage viewport */
+body[data-layout="fold-portrait"] .workspace {
+  grid-row: 1;
+  padding: 0.35rem;
+} /* closes fold portrait workspace */
 
-  .stage-wrap {
-    width: 100%;
-    min-width: 0;
-  } /* closes mobile stage */
+body[data-layout="fold-portrait"] .sidebar {
+  grid-row: 2;
+  border-left: 0;
+  border-top: 1px solid #666;
+  padding: 0.45rem;
+} /* closes fold portrait sidebar */
 
-  .mobile-actions {
-    display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 0.3rem;
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 50;
-    padding: 0.4rem max(0.4rem, env(safe-area-inset-right)) calc(0.4rem + env(safe-area-inset-bottom)) max(0.4rem, env(safe-area-inset-left));
-    background: rgba(0, 0, 0, 0.97);
-    border-top: 1px solid #777;
-  } /* closes mobile actions */
+body[data-layout="fold-portrait"] .workspace-toolbar {
+  margin-bottom: 0.25rem;
+} /* closes fold portrait toolbar */
 
-  .mobile-actions button {
-    min-height: 52px;
-    padding: 0.35rem 0.15rem;
-    font-size: 0.78rem;
-  } /* closes mobile action button */
-} /* closes mobile media query */
+body[data-layout="fold-portrait"] .control-jumpbar {
+  top: -0.45rem;
+  margin: -0.45rem -0.45rem 0.4rem;
+  padding: 0.35rem;
+} /* closes fold portrait jumpbar */
+
+body[data-layout="fold-portrait"] details {
+  margin-bottom: 0.4rem;
+} /* closes fold portrait details */
+
+body[data-layout="fold-portrait"] summary {
+  min-height: 42px;
+  padding: 0.55rem 0.65rem;
+} /* closes fold portrait summary */
+
+body[data-layout="fold-portrait"] .section-body {
+  padding: 0 0.55rem 0.6rem;
+} /* closes fold portrait section body */
+
+body[data-layout="fold-portrait"] button,
+body[data-layout="fold-portrait"] select,
+body[data-layout="fold-portrait"] input[type="text"],
+body[data-layout="fold-portrait"] input[type="number"],
+body[data-layout="fold-portrait"] .file-button {
+  min-height: 44px;
+} /* closes fold portrait controls */
+
+body[data-layout="fold-portrait"] .mobile-actions {
+  display: none;
+} /* closes fold portrait mobile actions */
+
+body[data-layout="fold-landscape"] .app {
+  grid-template-columns: minmax(0, 64%) minmax(20rem, 36%);
+  grid-template-rows: minmax(0, 1fr);
+} /* closes fold landscape app */
+
+body[data-layout="fold-landscape"] .workspace {
+  padding: 0.4rem;
+} /* closes fold landscape workspace */
+
+body[data-layout="fold-landscape"] .sidebar {
+  border-left: 1px solid #666;
+  border-top: 0;
+  padding: 0.45rem;
+} /* closes fold landscape sidebar */
+
+body[data-layout="fold-landscape"] .control-jumpbar {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  top: -0.45rem;
+  margin: -0.45rem -0.45rem 0.4rem;
+} /* closes fold landscape jumpbar */
+
+body[data-layout="fold-landscape"] .mobile-actions {
+  display: none;
+} /* closes fold landscape mobile actions */
+
+body[data-layout="phone"] .app {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 52%) minmax(0, 48%);
+} /* closes phone app */
+
+body[data-layout="phone"] .workspace {
+  grid-row: 1;
+  padding: 0.3rem;
+} /* closes phone workspace */
+
+body[data-layout="phone"] .sidebar {
+  grid-row: 2;
+  border-left: 0;
+  border-top: 1px solid #666;
+  padding: 0.4rem 0.4rem 4.5rem;
+} /* closes phone sidebar */
+
+body[data-layout="phone"] .control-jumpbar {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  top: -0.4rem;
+  margin: -0.4rem -0.4rem 0.35rem;
+  padding: 0.3rem;
+} /* closes phone jumpbar */
+
+body[data-layout="phone"] .control-jumpbar button {
+  min-height: 40px;
+  font-size: 0.74rem;
+} /* closes phone jumpbar button */
+
+body[data-layout="phone"] .workspace-toolbar {
+  flex-wrap: nowrap;
+  gap: 0.25rem;
+  margin-bottom: 0.2rem;
+} /* closes phone workspace toolbar */
+
+body[data-layout="phone"] .workspace-toolbar button {
+  min-width: 44px;
+  padding-inline: 0.35rem;
+} /* closes phone toolbar buttons */
+
+body[data-layout="phone"] .zoom-control {
+  min-width: 0;
+  flex-basis: auto;
+} /* closes phone zoom control */
+
+body[data-layout="phone"] .mobile-actions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.25rem;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 50;
+  padding: 0.3rem max(0.3rem, env(safe-area-inset-right)) calc(0.3rem + env(safe-area-inset-bottom)) max(0.3rem, env(safe-area-inset-left));
+  background: rgba(0, 0, 0, 0.97);
+  border-top: 1px solid #777;
+} /* closes phone mobile actions */
+
+body[data-layout="phone"] .mobile-actions button {
+  min-height: 48px;
+  padding: 0.25rem 0.1rem;
+  font-size: 0.72rem;
+} /* closes phone mobile action button */
+
+body[data-layout="desktop"] .app {
+  grid-template-columns: minmax(0, 1fr) minmax(20rem, 25rem);
+} /* closes desktop app */
+
+@media (max-height: 620px) {
+  body[data-layout="fold-landscape"] .workspace-toolbar,
+  body[data-layout="desktop"] .workspace-toolbar {
+    margin-bottom: 0.2rem;
+  } /* closes short-height toolbar */
+
+  body[data-layout="fold-landscape"] .control-jumpbar button {
+    min-height: 38px;
+  } /* closes short-height jumpbar buttons */
+} /* closes short-height media query */

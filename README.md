@@ -1,4 +1,4 @@
-# Rowan Furniture Planner v5
+# Rowan Furniture Planner v6
 
 Static GitHub Pages edition for:
 
@@ -9,6 +9,48 @@ The deployed Pages URL will normally be:
 https://antlaw0.github.io/Floor-Planner/
 
 ## Architecture
+
+
+## Adaptive screen layout
+
+V6 detects the usable browser viewport at runtime rather than relying on one fixed mobile
+breakpoint.
+
+The app switches among four interface profiles:
+
+- desktop
+- unfolded/foldable portrait
+- unfolded/foldable landscape
+- compact phone
+
+On an unfolded Samsung Galaxy Z Fold-class screen in portrait orientation, the screen is
+split into two live panes:
+
+- the upper pane keeps the entire floor plan visible at Fit/100%
+- the lower pane contains independently scrollable controls
+
+The map therefore stays visible while configuration, reusable furniture, editing, grid,
+calibration, and backup controls are used.
+
+On an unfolded device in landscape orientation, the app uses a side-by-side map/control
+layout.
+
+A sticky seven-button section bar in the control pane jumps directly to Layout, Library,
+Edit, Placed, Grid, Scale, or Backup controls. Compact layouts keep one control section
+open at a time to reduce scrolling.
+
+The layout is recalculated on:
+
+- initial launch
+- browser resize
+- fold/unfold viewport changes exposed to the browser
+- orientation changes
+- Android browser UI changes that resize the visual viewport
+
+The Fit control recalculates the floor-plan size from the space actually available to the
+map, so 100% means "fully visible in the current map pane" rather than "full image pixel
+size."
+
 
 This version has no Node server and no external database.
 

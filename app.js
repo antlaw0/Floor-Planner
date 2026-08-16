@@ -1,6 +1,6 @@
 "use strict";
 
-const APP_VERSION = "5.0.0";
+const APP_VERSION = "6.0.0";
 const CONFIG_FORMAT = "rowan-furniture-planner";
 const CONFIG_SCHEMA_VERSION = 4;
 const FURNITURE_FORMAT = "rowan-furniture-object";
@@ -24,7 +24,10 @@ const state = {
   calibration: null,
   zoomPercent: 100,
   loadedConfigName: null,
-  loadedFurnitureName: null
+  loadedFurnitureName: null,
+  fitStageWidth: 320,
+  fitStageHeight: 300,
+  layoutProfile: "desktop"
 }; // closes state object
 
 let dbPromise = null;
@@ -631,11 +634,45 @@ function updateGrid() {
   renderObjects();
 } // closes updateGrid
 
+function applyStageZoom() {
+  const stage = byId("stageWrap");
+  const scale = state.zoomPercent / 100;
+  const width = Math.max(1, state.fitStageWidth * scale);
+  const height = Math.max(1, state.fitStageHeight * scale);
+
+  stage.style.width = width + "px";
+  stage.style.height = height + "px";
+} // closes applyStageZoom
+
+function fitStageToViewport() {
+  const viewport = byId("stageViewport");
+
+  if (!viewport) {
+    return;
+  } // closes missing stage viewport branch
+
+  const availableWidth = Math.max(1, viewport.clientWidth - 4);
+  const availableHeight = Math.max(1, viewport.clientHeight - 4);
+  const aspect = VIEWBOX_WIDTH / VIEWBOX_HEIGHT;
+
+  let fitWidth = availableWidth;
+  let fitHeight = fitWidth / aspect;
+
+  if (fitHeight > availableHeight) {
+    fitHeight = availableHeight;
+    fitWidth = fitHeight * aspect;
+  } // closes height-constrained fit branch
+
+  state.fitStageWidth = Math.max(1, fitWidth);
+  state.fitStageHeight = Math.max(1, fitHeight);
+  applyStageZoom();
+} // closes fitStageToViewport
+
 function setZoom(value) {
   state.zoomPercent = clamp(Number(value) || 100, 60, 220);
   byId("zoomRange").value = String(state.zoomPercent);
   byId("zoomValue").textContent = state.zoomPercent + "%";
-  byId("stageWrap").style.width = state.zoomPercent === 100 ? "100%" : state.zoomPercent + "%";
+  applyStageZoom();
 } // closes setZoom
 
 function beginCalibration(axis) {
@@ -1416,6 +1453,149 @@ async function clearDeviceData() {
   } // closes clear-device-data try/catch
 } // closes clearDeviceData
 
+function getViewportSize() {
+  const viewport = window.visualViewport;
+
+  return {
+    width: Math.max(1, viewport ? viewport.width : window.innerWidth),
+    height: Math.max(1, viewport ? viewport.height : window.innerHeight)
+  }; // closes viewport size object
+} // closes getViewportSize
+
+function detectLayoutProfile() {
+  const size = getViewportSize();
+  const shortSide = Math.min(size.width, size.height);
+  const longSide = Math.max(size.width, size.height);
+
+  if (size.width >= 1180 && size.width >= size.height * 1.05) {
+    return "desktop";
+  } // closes desktop profile branch
+
+  if (shortSide >= 600 && longSide >= 760) {
+    return size.width < size.height ? "fold-portrait" : "fold-landscape";
+  } // closes fold/tablet profile branch
+
+  return "phone";
+} // closes detectLayoutProfile
+
+function compactControlPanels(profile) {
+  if (profile === "desktop") {
+    return;
+  } // closes desktop panel branch
+
+  const panels = Array.from(document.querySelectorAll(".control-panel"));
+
+  panels.forEach(function (panel, index) {
+    panel.open = index === 0;
+  }); // closes compact panel initialization loop
+} // closes compactControlPanels
+
+function updateAvailableAppHeight() {
+  const size = getViewportSize();
+  const header = document.querySelector("header");
+  const headerHeight = header ? header.getBoundingClientRect().height : 0;
+  const availableHeight = Math.max(240, size.height - headerHeight);
+
+  document.documentElement.style.setProperty("--app-available-height", availableHeight + "px");
+} // closes updateAvailableAppHeight
+
+function applyResponsiveLayout() {
+  const profile = detectLayoutProfile();
+  const changed = state.layoutProfile !== profile;
+
+  state.layoutProfile = profile;
+  document.body.dataset.layout = profile;
+  updateAvailableAppHeight();
+
+  const profileLabel = byId("layoutProfile");
+
+  if (profileLabel) {
+    const readable = {
+      "desktop": "Desktop layout.",
+      "fold-portrait": "Unfolded tablet/fold portrait layout.",
+      "fold-landscape": "Unfolded tablet/fold landscape layout.",
+      "phone": "Compact phone layout."
+    }; // closes readable profile map
+
+    profileLabel.textContent = readable[profile] || "";
+  } // closes profile label branch
+
+  if (changed) {
+    compactControlPanels(profile);
+  } // closes changed-profile branch
+
+  window.requestAnimationFrame(function () {
+    fitStageToViewport();
+
+    window.requestAnimationFrame(function () {
+      fitStageToViewport();
+    }); // closes second fit frame callback
+  }); // closes first fit frame callback
+} // closes applyResponsiveLayout
+
+function openControlPanel(panelId) {
+  const panel = byId(panelId);
+  const sidebar = byId("controlSidebar");
+
+  if (!panel || !sidebar) {
+    return;
+  } // closes missing control panel branch
+
+  if (state.layoutProfile !== "desktop") {
+    document.querySelectorAll(".control-panel").forEach(function (item) {
+      item.open = item === panel;
+    }); // closes compact panel close/open loop
+  } else {
+    panel.open = true;
+  } // closes control-panel profile branch
+
+  const jumpbar = sidebar.querySelector(".control-jumpbar");
+  const jumpHeight = jumpbar ? jumpbar.getBoundingClientRect().height : 0;
+  const targetTop = Math.max(0, panel.offsetTop - jumpHeight - 8);
+
+  sidebar.scrollTo({
+    top: targetTop,
+    behavior: "smooth"
+  }); // closes sidebar scroll options
+} // closes openControlPanel
+
+function wireControlJumpbar() {
+  document.querySelectorAll("[data-panel-target]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      openControlPanel(button.getAttribute("data-panel-target"));
+    }); // closes jumpbar button click callback
+  }); // closes jumpbar button registration loop
+} // closes wireControlJumpbar
+
+function wireResponsiveLayout() {
+  let resizeTimer = null;
+
+  function scheduleResponsiveUpdate() {
+    if (resizeTimer) {
+      window.clearTimeout(resizeTimer);
+    } // closes existing resize timer branch
+
+    resizeTimer = window.setTimeout(function () {
+      applyResponsiveLayout();
+    }, 80); // closes resize timer callback
+  } // closes scheduleResponsiveUpdate
+
+  window.addEventListener("resize", scheduleResponsiveUpdate);
+  window.addEventListener("orientationchange", scheduleResponsiveUpdate);
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", scheduleResponsiveUpdate);
+  } // closes visual viewport listener branch
+
+  if ("ResizeObserver" in window) {
+    const observer = new ResizeObserver(function () {
+      fitStageToViewport();
+    }); // closes stage resize observer callback
+
+    observer.observe(byId("stageViewport"));
+  } // closes ResizeObserver branch
+} // closes wireResponsiveLayout
+
 function wireButton(primaryId, mobileId, handler) {
   byId(primaryId).addEventListener("click", handler);
 
@@ -1496,7 +1676,10 @@ byId("zoomOut").addEventListener("click", function () {
 }); // closes zoom-out listener
 
 byId("fitView").addEventListener("click", function () {
-  setZoom(100);
+  state.zoomPercent = 100;
+  byId("zoomRange").value = "100";
+  byId("zoomValue").textContent = "100%";
+  fitStageToViewport();
 
   byId("stageViewport").scrollTo({
     left: 0,
@@ -1520,8 +1703,14 @@ async function registerServiceWorker() {
 } // closes registerServiceWorker
 
 async function initialize() {
+  wireControlJumpbar();
+  wireResponsiveLayout();
+  applyResponsiveLayout();
   updateGrid();
-  setZoom(100);
+  state.zoomPercent = 100;
+  byId("zoomRange").value = "100";
+  byId("zoomValue").textContent = "100%";
+  fitStageToViewport();
 
   try {
     await openDatabase();
@@ -1535,7 +1724,7 @@ async function initialize() {
   } // closes storage initialization try/catch
 
   await registerServiceWorker();
-  announce("Planner v5 ready. Saved layouts and furniture stay on this device.");
+  announce("Planner v6 ready. The map and controls automatically adapt to the current screen size.");
 } // closes initialize
 
 initialize();
