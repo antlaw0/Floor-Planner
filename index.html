@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="description" content="Rowan apartment furniture planner with reusable furniture and device-local saved configurations.">
+<title>Rowan Furniture Planner v5</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./assets/icon-192.png">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>Rowan Furniture Planner <span class="version-badge">v5</span></h1>
+    <p id="storageInfo">GitHub Pages edition. Configurations and reusable furniture save only on this device.</p>
+  </div>
+</header>
+
+<main class="app">
+  <section class="workspace" aria-label="Furniture placement workspace">
+    <div class="workspace-toolbar">
+      <button id="fitView" type="button">Fit</button>
+      <button id="zoomOut" type="button" aria-label="Zoom out">−</button>
+      <button id="zoomIn" type="button" aria-label="Zoom in">+</button>
+      <label class="zoom-control">Zoom
+        <input id="zoomRange" type="range" min="60" max="220" step="10" value="100">
+        <span id="zoomValue">100%</span>
+      </label>
+    </div>
+
+    <div id="stageViewport" class="stage-viewport">
+      <div id="stageWrap" class="stage-wrap" tabindex="0" aria-label="Interactive Rowan apartment floor plan. Select or drag furniture.">
+        <img class="floorplan" id="floorplan" src="./assets/floorplan.jpg" alt="">
+        <svg id="overlay" viewBox="0 0 2020 1900" role="img" aria-label="Furniture placement overlay">
+          <defs>
+            <pattern id="gridPattern" patternUnits="userSpaceOnUse" width="30.75" height="27.25">
+              <path id="gridPath" d="M 30.75 0 L 0 0 0 27.25" fill="none" stroke="#fff" stroke-width="1" opacity="0.35"></path>
+            </pattern>
+          </defs>
+          <rect id="gridRect" x="0" y="0" width="2020" height="1900" fill="url(#gridPattern)"></rect>
+          <g id="objectsLayer"></g>
+          <g id="calibrationLayer"></g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <aside class="sidebar" aria-label="Planner controls">
+    <details open>
+      <summary>Configuration</summary>
+      <div class="section-body">
+        <label>Saved configuration
+          <select id="configurationSelect"></select>
+        </label>
+
+        <div class="controls">
+          <button id="loadConfiguration" type="button">Load</button>
+          <button id="saveConfiguration" type="button">Save</button>
+          <button id="saveAsConfiguration" type="button">Save as</button>
+          <button id="deleteConfiguration" type="button">Delete</button>
+        </div>
+
+        <label>Configuration name
+          <input id="configurationName" type="text" value="Living room option 1" autocomplete="off">
+        </label>
+
+        <div class="controls">
+          <button id="exportConfiguration" type="button">Export configuration JSON</button>
+          <label class="file-button">Import configuration JSON
+            <input id="importConfiguration" type="file" accept=".json,application/json">
+          </label>
+        </div>
+
+        <p class="small">Saved configurations use this browser's IndexedDB storage. They do not automatically appear on another phone or computer.</p>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Reusable furniture library</summary>
+      <div class="section-body">
+        <label>Saved furniture
+          <select id="furnitureLibrarySelect"></select>
+        </label>
+
+        <div class="controls">
+          <button id="addLibraryFurniture" type="button">Add copy to layout</button>
+          <button id="loadFurnitureEditor" type="button">Load into editor</button>
+          <button id="saveFurnitureLibrary" type="button">Save furniture</button>
+          <button id="saveAsFurnitureLibrary" type="button">Save furniture as</button>
+          <button id="captureSelectedFurniture" type="button">Capture selected</button>
+          <button id="deleteFurnitureLibrary" type="button">Delete furniture</button>
+        </div>
+
+        <label>Furniture library name
+          <input id="furnitureLibraryName" type="text" value="Sofa" autocomplete="off">
+        </label>
+
+        <div class="controls">
+          <button id="exportFurniture" type="button">Export furniture JSON</button>
+          <label class="file-button">Import furniture JSON
+            <input id="importFurniture" type="file" accept=".json,application/json">
+          </label>
+        </div>
+
+        <p class="small"><strong>Independent templates:</strong> changing saved furniture does not alter copies already placed in configurations. Adding from the library creates a new independent copy.</p>
+      </div>
+    </details>
+
+    <details open>
+      <summary>Furniture editor</summary>
+      <div class="section-body">
+        <label>Visible label
+          <input id="labelInput" type="text" value="Sofa" autocomplete="off">
+        </label>
+
+        <div class="row">
+          <label>Shape
+            <select id="shapeInput">
+              <option value="rect">Rectangle</option>
+              <option value="ellipse">Circle / ellipse</option>
+            </select>
+          </label>
+
+          <label>Color
+            <select id="colorInput">
+              <option value="#ef4444">Red</option>
+              <option value="#f97316">Orange</option>
+              <option value="#eab308">Yellow</option>
+              <option value="#22c55e">Green</option>
+              <option value="#14b8a6">Teal</option>
+              <option value="#06b6d4">Cyan</option>
+              <option value="#3b82f6" selected>Blue</option>
+              <option value="#8b5cf6">Purple</option>
+              <option value="#d946ef">Magenta</option>
+              <option value="#6b7280">Gray</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="row">
+          <label>Width feet
+            <input id="widthFeet" type="number" min="0" step="1" inputmode="numeric" value="6">
+          </label>
+
+          <label>Width inches
+            <input id="widthInches" type="number" min="0" max="11.99" step="0.25" inputmode="decimal" value="6">
+          </label>
+        </div>
+
+        <div class="row">
+          <label>Depth feet
+            <input id="depthFeet" type="number" min="0" step="1" inputmode="numeric" value="3">
+          </label>
+
+          <label>Depth inches
+            <input id="depthInches" type="number" min="0" max="11.99" step="0.25" inputmode="decimal" value="0">
+          </label>
+        </div>
+
+        <label>Rotation
+          <select id="rotationInput">
+            <option value="0">0 degrees</option>
+            <option value="90">90 degrees</option>
+            <option value="180">180 degrees</option>
+            <option value="270">270 degrees</option>
+          </select>
+        </label>
+
+        <div class="controls">
+          <button id="addObject" type="button">Add edited furniture</button>
+          <button id="applyObject" type="button">Apply to selected layout object</button>
+          <button id="rotateObject" type="button">Rotate selected 90°</button>
+          <button id="duplicateObject" type="button">Duplicate selected</button>
+          <button id="deleteObject" type="button">Delete selected</button>
+        </div>
+      </div>
+    </details>
+
+    <details>
+      <summary>Furniture in current layout</summary>
+      <div class="section-body">
+        <label>Placed furniture
+          <select id="objectList" size="7"></select>
+        </label>
+        <p id="selectedDetails" class="small">No object selected.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Grid and plan</summary>
+      <div class="section-body">
+        <div class="row">
+          <label>Move/grid feet
+            <input id="unitFeet" type="number" min="0" step="1" inputmode="numeric" value="0">
+          </label>
+
+          <label>Move/grid inches
+            <input id="unitInches" type="number" min="0" max="11.99" step="0.25" inputmode="decimal" value="6">
+          </label>
+        </div>
+
+        <label class="check">
+          <input id="snapToggle" type="checkbox" checked>
+          Snap furniture to grid
+        </label>
+
+        <label class="check">
+          <input id="gridToggle" type="checkbox" checked>
+          Show grid
+        </label>
+
+        <label>Floor-plan opacity
+          <input id="opacitySlider" type="range" min="0" max="100" value="72">
+        </label>
+      </div>
+    </details>
+
+    <details>
+      <summary>Scale calibration</summary>
+      <div class="section-body">
+        <div class="row">
+          <label>Horizontal pixels/foot
+            <input id="ppfX" type="number" min="1" step="0.1" inputmode="decimal" value="61.5">
+          </label>
+
+          <label>Vertical pixels/foot
+            <input id="ppfY" type="number" min="1" step="0.1" inputmode="decimal" value="54.5">
+          </label>
+        </div>
+
+        <div class="controls">
+          <button id="calibrateX" type="button">Calibrate horizontal</button>
+          <button id="calibrateY" type="button">Calibrate vertical</button>
+        </div>
+
+        <p class="small">The supplied floor plan says dimensions are approximate and may not be to scale.</p>
+      </div>
+    </details>
+
+    <details>
+      <summary>Device backup and restore</summary>
+      <div class="section-body">
+        <p class="small">Use a full backup before clearing browser data or moving to another device. It contains all saved configurations and reusable furniture from this device.</p>
+
+        <div class="controls">
+          <button id="exportBackup" type="button">Export full device backup</button>
+          <label class="file-button">Import full device backup
+            <input id="importBackup" type="file" accept=".json,application/json">
+          </label>
+        </div>
+
+        <button id="clearDeviceData" class="danger-button" type="button">Clear all planner data on this device</button>
+      </div>
+    </details>
+
+    <details>
+      <summary>About local storage</summary>
+      <div class="section-body">
+        <p class="small">The app itself is served by GitHub Pages, but saved data stays in this browser on this device. Private/incognito browsing, clearing site data, or browser cleanup can remove it. Export a full backup periodically if the layouts matter.</p>
+      </div>
+    </details>
+
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+  </aside>
+</main>
+
+<nav class="mobile-actions" aria-label="Quick actions">
+  <button id="mobileLibraryAdd" type="button">Library +</button>
+  <button id="mobileApply" type="button">Update</button>
+  <button id="mobileRotate" type="button">Rotate</button>
+  <button id="mobileDuplicate" type="button">Copy</button>
+  <button id="mobileSave" type="button">Save layout</button>
+</nav>
+
+<script src="./app.js"></script>
+</body>
+</html>
