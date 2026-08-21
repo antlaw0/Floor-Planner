@@ -1,1730 +1,234 @@
-"use strict";
-
-const APP_VERSION = "6.0.0";
-const CONFIG_FORMAT = "rowan-furniture-planner";
-const CONFIG_SCHEMA_VERSION = 4;
-const FURNITURE_FORMAT = "rowan-furniture-object";
-const FURNITURE_SCHEMA_VERSION = 1;
-const BACKUP_FORMAT = "rowan-floor-planner-device-backup";
-const BACKUP_SCHEMA_VERSION = 1;
-const VIEWBOX_WIDTH = 2020;
-const VIEWBOX_HEIGHT = 1900;
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-const DB_NAME = "rowan-floor-planner";
-const DB_VERSION = 1;
-const CONFIG_STORE = "configurations";
-const FURNITURE_STORE = "furniture";
-
-const state = {
-  objects: [],
-  selectedId: null,
-  nextId: 1,
-  dragging: null,
-  calibration: null,
-  zoomPercent: 100,
-  loadedConfigName: null,
-  loadedFurnitureName: null,
-  fitStageWidth: 320,
-  fitStageHeight: 300,
-  layoutProfile: "desktop"
-}; // closes state object
-
-let dbPromise = null;
-
-function byId(id) {
-  return document.getElementById(id);
-} // closes byId
-
-function announce(message) {
-  byId("status").textContent = message;
-} // closes announce
-
-function clamp(value, minValue, maxValue) {
-  return Math.min(maxValue, Math.max(minValue, value));
-} // closes clamp
-
-function feetAndInchesToInches(feetValue, inchesValue) {
-  return Math.max(0, (Number(feetValue) || 0) * 12 + (Number(inchesValue) || 0));
-} // closes feetAndInchesToInches
-
-function inchesToReadable(value) {
-  const rounded = Math.round(Math.max(0, Number(value) || 0) * 4) / 4;
-  const feet = Math.floor(rounded / 12);
-  const inches = Math.round((rounded - feet * 12) * 4) / 4;
-
-  return feet + " ft " + inches + " in";
-} // closes inchesToReadable
-
-function ppfX() {
-  return Math.max(1, Number(byId("ppfX").value) || 61.5);
-} // closes ppfX
-
-function ppfY() {
-  return Math.max(1, Number(byId("ppfY").value) || 54.5);
-} // closes ppfY
-
-function movementInches() {
-  const value = feetAndInchesToInches(byId("unitFeet").value, byId("unitInches").value);
-
-  return value > 0 ? value : 6;
-} // closes movementInches
-
-function snapEnabled() {
-  return byId("snapToggle").checked;
-} // closes snapEnabled
-
-function gridPixelStepX() {
-  return movementInches() / 12 * ppfX();
-} // closes gridPixelStepX
-
-function gridPixelStepY() {
-  return movementInches() / 12 * ppfY();
-} // closes gridPixelStepY
-
-function snapPixelX(value) {
-  if (!snapEnabled()) {
-    return value;
-  } // closes no-snap X branch
-
-  const step = gridPixelStepX();
-
-  return Math.round(value / step) * step;
-} // closes snapPixelX
-
-function snapPixelY(value) {
-  if (!snapEnabled()) {
-    return value;
-  } // closes no-snap Y branch
-
-  const step = gridPixelStepY();
-
-  return Math.round(value / step) * step;
-} // closes snapPixelY
-
-function ratioToPixelX(ratio) {
-  return clamp(Number(ratio) || 0, 0, 1) * VIEWBOX_WIDTH;
-} // closes ratioToPixelX
-
-function ratioToPixelY(ratio) {
-  return clamp(Number(ratio) || 0, 0, 1) * VIEWBOX_HEIGHT;
-} // closes ratioToPixelY
-
-function pixelToRatioX(pixel) {
-  return clamp(pixel / VIEWBOX_WIDTH, 0, 1);
-} // closes pixelToRatioX
-
-function pixelToRatioY(pixel) {
-  return clamp(pixel / VIEWBOX_HEIGHT, 0, 1);
-} // closes pixelToRatioY
-
-function openDatabase() {
-  if (dbPromise) {
-    return dbPromise;
-  } // closes existing DB promise branch
-
-  dbPromise = new Promise(function (resolve, reject) {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-    request.onupgradeneeded = function () {
-      const db = request.result;
-
-      if (!db.objectStoreNames.contains(CONFIG_STORE)) {
-        db.createObjectStore(CONFIG_STORE, {
-          keyPath: "name"
-        }); // closes configuration store options
-      } // closes missing configuration store branch
-
-      if (!db.objectStoreNames.contains(FURNITURE_STORE)) {
-        db.createObjectStore(FURNITURE_STORE, {
-          keyPath: "name"
-        }); // closes furniture store options
-      } // closes missing furniture store branch
-    }; // closes DB upgrade callback
-
-    request.onsuccess = function () {
-      resolve(request.result);
-    }; // closes DB success callback
-
-    request.onerror = function () {
-      reject(request.error || new Error("Could not open device storage."));
-    }; // closes DB error callback
-  }); // closes DB promise
-
-  return dbPromise;
-} // closes openDatabase
-
-async function storeGetAll(storeName) {
-  const db = await openDatabase();
-
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction(storeName, "readonly");
-    const request = tx.objectStore(storeName).getAll();
-
-    request.onsuccess = function () {
-      resolve(request.result || []);
-    }; // closes get-all success callback
-
-    request.onerror = function () {
-      reject(request.error || new Error("Could not read device storage."));
-    }; // closes get-all error callback
-  }); // closes get-all promise
-} // closes storeGetAll
-
-async function storeGet(storeName, key) {
-  const db = await openDatabase();
-
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction(storeName, "readonly");
-    const request = tx.objectStore(storeName).get(key);
-
-    request.onsuccess = function () {
-      resolve(request.result || null);
-    }; // closes get success callback
-
-    request.onerror = function () {
-      reject(request.error || new Error("Could not read saved data."));
-    }; // closes get error callback
-  }); // closes get promise
-} // closes storeGet
-
-async function storePut(storeName, record) {
-  const db = await openDatabase();
-
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction(storeName, "readwrite");
-
-    tx.objectStore(storeName).put(record);
-
-    tx.oncomplete = function () {
-      resolve();
-    }; // closes put complete callback
-
-    tx.onerror = function () {
-      reject(tx.error || new Error("Could not save data on this device."));
-    }; // closes put error callback
-  }); // closes put promise
-} // closes storePut
-
-async function storeDelete(storeName, key) {
-  const db = await openDatabase();
-
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction(storeName, "readwrite");
-
-    tx.objectStore(storeName).delete(key);
-
-    tx.oncomplete = function () {
-      resolve();
-    }; // closes delete complete callback
-
-    tx.onerror = function () {
-      reject(tx.error || new Error("Could not delete saved data."));
-    }; // closes delete error callback
-  }); // closes delete promise
-} // closes storeDelete
-
-async function clearAllStores() {
-  const db = await openDatabase();
-
-  return new Promise(function (resolve, reject) {
-    const tx = db.transaction([CONFIG_STORE, FURNITURE_STORE], "readwrite");
-
-    tx.objectStore(CONFIG_STORE).clear();
-    tx.objectStore(FURNITURE_STORE).clear();
-
-    tx.oncomplete = function () {
-      resolve();
-    }; // closes clear complete callback
-
-    tx.onerror = function () {
-      reject(tx.error || new Error("Could not clear planner data."));
-    }; // closes clear error callback
-  }); // closes clear promise
-} // closes clearAllStores
-
-function svgElement(name) {
-  return document.createElementNS(SVG_NS, name);
-} // closes svgElement
-
-function rgbaFill(hex, alpha) {
-  const clean = String(hex || "#3b82f6").replace("#", "");
-  const r = parseInt(clean.substring(0, 2), 16);
-  const g = parseInt(clean.substring(2, 4), 16);
-  const b = parseInt(clean.substring(4, 6), 16);
-
-  return "rgba(" + r + "," + g + "," + b + "," + alpha + ")";
-} // closes rgbaFill
-
-function getEditorFurniture() {
-  return {
-    label: byId("labelInput").value.trim() || "Furniture",
-    shape: byId("shapeInput").value === "ellipse" ? "ellipse" : "rect",
-    color: byId("colorInput").value,
-    widthInches: Math.max(1, feetAndInchesToInches(byId("widthFeet").value, byId("widthInches").value)),
-    depthInches: Math.max(1, feetAndInchesToInches(byId("depthFeet").value, byId("depthInches").value)),
-    rotation: [0, 90, 180, 270].includes(Number(byId("rotationInput").value)) ? Number(byId("rotationInput").value) : 0
-  }; // closes editor furniture object
-} // closes getEditorFurniture
-
-function setFeetInches(feetId, inchesId, totalInches) {
-  const rounded = Math.round(Math.max(0, Number(totalInches) || 0) * 4) / 4;
-
-  byId(feetId).value = Math.floor(rounded / 12);
-  byId(inchesId).value = Math.round((rounded % 12) * 4) / 4;
-} // closes setFeetInches
-
-function setEditorFurniture(furniture) {
-  byId("labelInput").value = String(furniture.label || "Furniture");
-  byId("shapeInput").value = furniture.shape === "ellipse" ? "ellipse" : "rect";
-  byId("colorInput").value = String(furniture.color || "#3b82f6");
-  setFeetInches("widthFeet", "widthInches", Math.max(1, Number(furniture.widthInches) || 12));
-  setFeetInches("depthFeet", "depthInches", Math.max(1, Number(furniture.depthInches) || 12));
-  byId("rotationInput").value = String([0, 90, 180, 270].includes(Number(furniture.rotation)) ? Number(furniture.rotation) : 0);
-} // closes setEditorFurniture
-
-function objectById(id) {
-  return state.objects.find(function (item) {
-    return item.id === id;
-  }); // closes object find callback
-} // closes objectById
-
-function visualDimensions(obj) {
-  const quarterTurn = obj.rotation === 90 || obj.rotation === 270;
-  const widthInches = quarterTurn ? obj.depthInches : obj.widthInches;
-  const depthInches = quarterTurn ? obj.widthInches : obj.depthInches;
-
-  return {
-    widthPx: widthInches / 12 * ppfX(),
-    heightPx: depthInches / 12 * ppfY()
-  }; // closes visual dimension object
-} // closes visualDimensions
-
-function addGeometry(element, obj, dimensions) {
-  const x = ratioToPixelX(obj.xRatio);
-  const y = ratioToPixelY(obj.yRatio);
-
-  if (obj.shape === "ellipse") {
-    element.setAttribute("cx", x);
-    element.setAttribute("cy", y);
-    element.setAttribute("rx", dimensions.widthPx / 2);
-    element.setAttribute("ry", dimensions.heightPx / 2);
-  } else {
-    element.setAttribute("x", x - dimensions.widthPx / 2);
-    element.setAttribute("y", y - dimensions.heightPx / 2);
-    element.setAttribute("width", dimensions.widthPx);
-    element.setAttribute("height", dimensions.heightPx);
-    element.setAttribute("rx", "5");
-  } // closes geometry shape branch
-} // closes addGeometry
-
-function renderObjects() {
-  const layer = byId("objectsLayer");
-
-  layer.replaceChildren();
-
-  state.objects.forEach(function (obj) {
-    const dimensions = visualDimensions(obj);
-    const group = svgElement("g");
-    const shape = svgElement(obj.shape === "ellipse" ? "ellipse" : "rect");
-
-    addGeometry(shape, obj, dimensions);
-    shape.setAttribute("fill", rgbaFill(obj.color, 0.58));
-    shape.setAttribute("class", "object-shape" + (state.selectedId === obj.id ? " selected" : ""));
-
-    const hit = svgElement(obj.shape === "ellipse" ? "ellipse" : "rect");
-
-    addGeometry(hit, obj, dimensions);
-    hit.setAttribute("class", "object-hit");
-    hit.setAttribute("data-id", String(obj.id));
-    hit.addEventListener("pointerdown", onObjectPointerDown);
-    hit.addEventListener("click", function (event) {
-      event.stopPropagation();
-      selectObject(obj.id);
-    }); // closes hit click listener
-
-    const label = svgElement("text");
-
-    label.setAttribute("x", ratioToPixelX(obj.xRatio));
-    label.setAttribute("y", ratioToPixelY(obj.yRatio));
-    label.setAttribute("class", "object-label");
-    label.textContent = obj.label;
-
-    group.appendChild(shape);
-    group.appendChild(hit);
-    group.appendChild(label);
-    layer.appendChild(group);
-  }); // closes render object loop
-
-  refreshObjectList();
-  refreshSelectedDetails();
-} // closes renderObjects
-
-function refreshObjectList() {
-  const select = byId("objectList");
-
-  select.replaceChildren();
-
-  state.objects.forEach(function (obj) {
-    const option = document.createElement("option");
-
-    option.value = String(obj.id);
-    option.textContent = obj.label + ", " + inchesToReadable(obj.widthInches) + " by " + inchesToReadable(obj.depthInches);
-    option.selected = obj.id === state.selectedId;
-    select.appendChild(option);
-  }); // closes object-list loop
-} // closes refreshObjectList
-
-function refreshSelectedDetails() {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    byId("selectedDetails").textContent = "No object selected.";
-    return;
-  } // closes no selected-details branch
-
-  const sourceText = obj.sourceFurnitureName ? " Copied from library item " + obj.sourceFurnitureName + "." : "";
-
-  byId("selectedDetails").textContent =
-    obj.label + ". " +
-    inchesToReadable(obj.widthInches) + " wide by " +
-    inchesToReadable(obj.depthInches) + " deep. Rotation " +
-    obj.rotation + " degrees." +
-    sourceText;
-} // closes refreshSelectedDetails
-
-function selectObject(id) {
-  const obj = objectById(id);
-
-  if (!obj) {
-    return;
-  } // closes missing selection branch
-
-  state.selectedId = id;
-  setEditorFurniture(obj);
-  renderObjects();
-  announce("Selected " + obj.label + ".");
-} // closes selectObject
-
-function createPlacedObject(furniture, sourceFurnitureName = null) {
-  const id = state.nextId;
-
-  state.nextId += 1;
-
-  return {
-    id: id,
-    label: String(furniture.label || ("Furniture " + id)),
-    shape: furniture.shape === "ellipse" ? "ellipse" : "rect",
-    color: String(furniture.color || "#3b82f6"),
-    widthInches: Math.max(1, Number(furniture.widthInches) || 12),
-    depthInches: Math.max(1, Number(furniture.depthInches) || 12),
-    rotation: [0, 90, 180, 270].includes(Number(furniture.rotation)) ? Number(furniture.rotation) : 0,
-    xRatio: pixelToRatioX(snapPixelX(VIEWBOX_WIDTH / 2)),
-    yRatio: pixelToRatioY(snapPixelY(VIEWBOX_HEIGHT / 2)),
-    sourceFurnitureName: sourceFurnitureName ? String(sourceFurnitureName) : null
-  }; // closes placed object
-} // closes createPlacedObject
-
-function addEditorFurniture() {
-  const obj = createPlacedObject(getEditorFurniture(), null);
-
-  state.objects.push(obj);
-  state.selectedId = obj.id;
-  renderObjects();
-  announce("Added " + obj.label + " from the editor.");
-} // closes addEditorFurniture
-
-function applyObject() {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    announce("Select furniture in the layout first.");
-    return;
-  } // closes no selected apply branch
-
-  const edited = getEditorFurniture();
-
-  obj.label = edited.label;
-  obj.shape = edited.shape;
-  obj.color = edited.color;
-  obj.widthInches = edited.widthInches;
-  obj.depthInches = edited.depthInches;
-  obj.rotation = edited.rotation;
-
-  renderObjects();
-  announce("Updated selected layout object " + obj.label + ". The reusable library copy was not changed.");
-} // closes applyObject
-
-function rotateObject() {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    announce("Select furniture in the layout first.");
-    return;
-  } // closes no selected rotate branch
-
-  obj.rotation = (obj.rotation + 90) % 360;
-  byId("rotationInput").value = String(obj.rotation);
-  renderObjects();
-  announce("Rotated " + obj.label + ".");
-} // closes rotateObject
-
-function duplicateObject() {
-  const source = objectById(state.selectedId);
-
-  if (!source) {
-    announce("Select furniture in the layout first.");
-    return;
-  } // closes no duplicate source branch
-
-  const copy = {
-    id: state.nextId,
-    label: source.label + " copy",
-    shape: source.shape,
-    color: source.color,
-    widthInches: source.widthInches,
-    depthInches: source.depthInches,
-    rotation: source.rotation,
-    xRatio: pixelToRatioX(snapPixelX(ratioToPixelX(source.xRatio) + gridPixelStepX())),
-    yRatio: pixelToRatioY(snapPixelY(ratioToPixelY(source.yRatio) + gridPixelStepY())),
-    sourceFurnitureName: source.sourceFurnitureName || null
-  }; // closes duplicate placed object
-
-  state.nextId += 1;
-  state.objects.push(copy);
-  state.selectedId = copy.id;
-  setEditorFurniture(copy);
-  renderObjects();
-  announce("Duplicated " + source.label + " inside this layout.");
-} // closes duplicateObject
-
-function deleteObject() {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    announce("Select furniture in the layout first.");
-    return;
-  } // closes no delete selection branch
-
-  state.objects = state.objects.filter(function (item) {
-    return item.id !== obj.id;
-  }); // closes delete filter
-
-  state.selectedId = null;
-  renderObjects();
-  announce("Deleted " + obj.label + " from this layout. The reusable furniture library was not changed.");
-} // closes deleteObject
-
-function svgPointFromClient(clientX, clientY) {
-  const svg = byId("overlay");
-  const point = svg.createSVGPoint();
-
-  point.x = clientX;
-  point.y = clientY;
-
-  const transformed = point.matrixTransform(svg.getScreenCTM().inverse());
-
-  return {
-    x: transformed.x,
-    y: transformed.y
-  }; // closes SVG point result
-} // closes svgPointFromClient
-
-function onObjectPointerDown(event) {
-  event.preventDefault();
-  event.stopPropagation();
-
-  const id = Number(event.currentTarget.getAttribute("data-id"));
-
-  selectObject(id);
-
-  const obj = objectById(id);
-  const point = svgPointFromClient(event.clientX, event.clientY);
-
-  state.dragging = {
-    pointerId: event.pointerId,
-    id: id,
-    offsetX: point.x - ratioToPixelX(obj.xRatio),
-    offsetY: point.y - ratioToPixelY(obj.yRatio)
-  }; // closes dragging object
-
-  byId("overlay").setPointerCapture(event.pointerId);
-} // closes onObjectPointerDown
-
-function onOverlayPointerMove(event) {
-  if (!state.dragging || state.dragging.pointerId !== event.pointerId) {
-    return;
-  } // closes inactive drag branch
-
-  const obj = objectById(state.dragging.id);
-
-  if (!obj) {
-    return;
-  } // closes missing drag object branch
-
-  const point = svgPointFromClient(event.clientX, event.clientY);
-
-  obj.xRatio = pixelToRatioX(snapPixelX(point.x - state.dragging.offsetX));
-  obj.yRatio = pixelToRatioY(snapPixelY(point.y - state.dragging.offsetY));
-  renderObjects();
-} // closes onOverlayPointerMove
-
-function onOverlayPointerUp(event) {
-  if (!state.dragging || state.dragging.pointerId !== event.pointerId) {
-    return;
-  } // closes inactive pointer-up branch
-
-  const obj = objectById(state.dragging.id);
-
-  state.dragging = null;
-
-  try {
-    byId("overlay").releasePointerCapture(event.pointerId);
-  } catch (error) {
-    console.debug("Pointer capture already released.", error);
-  } // closes pointer release try/catch
-
-  if (obj) {
-    announce(obj.label + " moved.");
-  } // closes moved announcement branch
-} // closes onOverlayPointerUp
-
-function nudgeSelected(dxUnits, dyUnits) {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    announce("Select furniture in the layout first.");
-    return;
-  } // closes no nudge selection branch
-
-  obj.xRatio = pixelToRatioX(snapPixelX(ratioToPixelX(obj.xRatio) + dxUnits * gridPixelStepX()));
-  obj.yRatio = pixelToRatioY(snapPixelY(ratioToPixelY(obj.yRatio) + dyUnits * gridPixelStepY()));
-  renderObjects();
-} // closes nudgeSelected
-
-function onStageKeyDown(event) {
-  const amount = event.shiftKey ? 5 : 1;
-
-  if (event.key === "ArrowLeft") {
-    event.preventDefault();
-    nudgeSelected(-amount, 0);
-  } else if (event.key === "ArrowRight") {
-    event.preventDefault();
-    nudgeSelected(amount, 0);
-  } else if (event.key === "ArrowUp") {
-    event.preventDefault();
-    nudgeSelected(0, -amount);
-  } else if (event.key === "ArrowDown") {
-    event.preventDefault();
-    nudgeSelected(0, amount);
-  } else if (event.key === "Delete") {
-    event.preventDefault();
-    deleteObject();
-  } // closes keyboard action branch
-} // closes onStageKeyDown
-
-function updateGrid() {
-  const sx = gridPixelStepX();
-  const sy = gridPixelStepY();
-
-  byId("gridPattern").setAttribute("width", sx);
-  byId("gridPattern").setAttribute("height", sy);
-  byId("gridPath").setAttribute("d", "M " + sx + " 0 L 0 0 0 " + sy);
-  byId("gridRect").style.display = byId("gridToggle").checked ? "" : "none";
-  renderObjects();
-} // closes updateGrid
-
-function applyStageZoom() {
-  const stage = byId("stageWrap");
-  const scale = state.zoomPercent / 100;
-  const width = Math.max(1, state.fitStageWidth * scale);
-  const height = Math.max(1, state.fitStageHeight * scale);
-
-  stage.style.width = width + "px";
-  stage.style.height = height + "px";
-} // closes applyStageZoom
-
-function fitStageToViewport() {
-  const viewport = byId("stageViewport");
-
-  if (!viewport) {
-    return;
-  } // closes missing stage viewport branch
-
-  const availableWidth = Math.max(1, viewport.clientWidth - 4);
-  const availableHeight = Math.max(1, viewport.clientHeight - 4);
-  const aspect = VIEWBOX_WIDTH / VIEWBOX_HEIGHT;
-
-  let fitWidth = availableWidth;
-  let fitHeight = fitWidth / aspect;
-
-  if (fitHeight > availableHeight) {
-    fitHeight = availableHeight;
-    fitWidth = fitHeight * aspect;
-  } // closes height-constrained fit branch
-
-  state.fitStageWidth = Math.max(1, fitWidth);
-  state.fitStageHeight = Math.max(1, fitHeight);
-  applyStageZoom();
-} // closes fitStageToViewport
-
-function setZoom(value) {
-  state.zoomPercent = clamp(Number(value) || 100, 60, 220);
-  byId("zoomRange").value = String(state.zoomPercent);
-  byId("zoomValue").textContent = state.zoomPercent + "%";
-  applyStageZoom();
-} // closes setZoom
-
-function beginCalibration(axis) {
-  state.calibration = {
-    axis: axis,
-    points: []
-  }; // closes calibration state
-
-  byId("calibrationLayer").replaceChildren();
-  announce("Calibration mode. Tap two points marking a known " + (axis === "x" ? "horizontal" : "vertical") + " distance.");
-} // closes beginCalibration
-
-function onOverlayClick(event) {
-  if (!state.calibration) {
-    return;
-  } // closes no calibration branch
-
-  const point = svgPointFromClient(event.clientX, event.clientY);
-
-  state.calibration.points.push(point);
-
-  if (state.calibration.points.length === 1) {
-    announce("First point set. Tap the second point.");
-    return;
-  } // closes first calibration point branch
-
-  const first = state.calibration.points[0];
-  const second = state.calibration.points[1];
-  const line = svgElement("line");
-
-  line.setAttribute("x1", first.x);
-  line.setAttribute("y1", first.y);
-  line.setAttribute("x2", second.x);
-  line.setAttribute("y2", second.y);
-  line.setAttribute("class", "calibration-line");
-  byId("calibrationLayer").replaceChildren(line);
-
-  const feetText = window.prompt("Known distance, feet:", "10");
-  const inchesText = feetText === null ? null : window.prompt("Additional inches:", "0");
-
-  if (feetText === null || inchesText === null) {
-    state.calibration = null;
-    byId("calibrationLayer").replaceChildren();
-    announce("Calibration cancelled.");
-    return;
-  } // closes cancelled calibration branch
-
-  const knownFeet = feetAndInchesToInches(feetText, inchesText) / 12;
-
-  if (knownFeet <= 0) {
-    state.calibration = null;
-    byId("calibrationLayer").replaceChildren();
-    announce("Calibration distance must be greater than zero.");
-    return;
-  } // closes invalid calibration branch
-
-  if (state.calibration.axis === "x") {
-    byId("ppfX").value = (Math.abs(second.x - first.x) / knownFeet).toFixed(2);
-  } else {
-    byId("ppfY").value = (Math.abs(second.y - first.y) / knownFeet).toFixed(2);
-  } // closes calibration axis branch
-
-  state.calibration = null;
-  byId("calibrationLayer").replaceChildren();
-  updateGrid();
-  announce("Calibration updated.");
-} // closes onOverlayClick
-
-function configurationData() {
-  return {
-    format: CONFIG_FORMAT,
-    schemaVersion: CONFIG_SCHEMA_VERSION,
-    appVersion: APP_VERSION,
-    savedAt: new Date().toISOString(),
-    name: byId("configurationName").value.trim() || "Untitled",
-    plan: {
-      id: "rowan-chestnut-a6",
-      viewBox: {
-        width: VIEWBOX_WIDTH,
-        height: VIEWBOX_HEIGHT
-      }, // closes configuration viewBox
-      scale: {
-        xPixelsPerFoot: ppfX(),
-        yPixelsPerFoot: ppfY()
-      } // closes configuration scale
-    }, // closes configuration plan
-    settings: {
-      movementInches: movementInches(),
-      snapToGrid: byId("snapToggle").checked,
-      showGrid: byId("gridToggle").checked,
-      floorplanOpacity: Number(byId("opacitySlider").value) / 100
-    }, // closes configuration settings
-    objects: state.objects.map(function (obj) {
-      return {
-        id: obj.id,
-        label: obj.label,
-        shape: obj.shape,
-        color: obj.color,
-        widthInches: obj.widthInches,
-        depthInches: obj.depthInches,
-        rotation: obj.rotation,
-        sourceFurnitureName: obj.sourceFurnitureName || null,
-        position: {
-          xRatio: obj.xRatio,
-          yRatio: obj.yRatio
-        } // closes configuration object position
-      }; // closes serialized configuration object
-    }) // closes configuration object map
-  }; // closes configuration data
-} // closes configurationData
-
-function furnitureLibraryData(name) {
-  return {
-    format: FURNITURE_FORMAT,
-    schemaVersion: FURNITURE_SCHEMA_VERSION,
-    appVersion: APP_VERSION,
-    savedAt: new Date().toISOString(),
-    name: name,
-    furniture: getEditorFurniture()
-  }; // closes furniture library data
-} // closes furnitureLibraryData
-
-function migrateConfig(raw) {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Configuration is not a JSON object.");
-  } // closes invalid raw configuration branch
-
-  if (raw.format === CONFIG_FORMAT && Number(raw.schemaVersion) === 4) {
-    return raw;
-  } // closes native v4 configuration branch
-
-  if (raw.format === CONFIG_FORMAT && [2, 3].includes(Number(raw.schemaVersion))) {
-    const migrated = JSON.parse(JSON.stringify(raw));
-
-    migrated.schemaVersion = 4;
-    migrated.appVersion = APP_VERSION;
-    migrated.savedAt = new Date().toISOString();
-    migrated.objects = (Array.isArray(migrated.objects) ? migrated.objects : []).map(function (obj) {
-      obj.sourceFurnitureName = obj.sourceFurnitureName || null;
-      return obj;
-    }); // closes v2/v3 object migration
-
-    return migrated;
-  } // closes v2/v3 migration branch
-
-  const looksLikeV1 = Array.isArray(raw.objects) && (
-    Number(raw.version) === 1 ||
-    Number(raw.schemaVersion) === 1 ||
-    raw.format === undefined
-  );
-
-  if (looksLikeV1) {
-    const oldScaleX = Number(raw.scale && raw.scale.ppfX) || 61.5;
-    const oldScaleY = Number(raw.scale && raw.scale.ppfY) || 54.5;
-    const oldGridFeet = Number(raw.grid && raw.grid.feet) || 0;
-    const oldGridInches = Number(raw.grid && raw.grid.inches) || 6;
-
-    return {
-      format: CONFIG_FORMAT,
-      schemaVersion: 4,
-      appVersion: APP_VERSION,
-      savedAt: new Date().toISOString(),
-      name: String(raw.name || "Migrated v1 layout"),
-      plan: {
-        id: "rowan-chestnut-a6",
-        viewBox: {
-          width: VIEWBOX_WIDTH,
-          height: VIEWBOX_HEIGHT
-        }, // closes migrated v1 viewBox
-        scale: {
-          xPixelsPerFoot: oldScaleX,
-          yPixelsPerFoot: oldScaleY
-        } // closes migrated v1 scale
-      }, // closes migrated v1 plan
-      settings: {
-        movementInches: oldGridFeet * 12 + oldGridInches,
-        snapToGrid: raw.grid ? raw.grid.snap !== false : true,
-        showGrid: raw.grid ? raw.grid.show !== false : true,
-        floorplanOpacity: 0.72
-      }, // closes migrated v1 settings
-      objects: raw.objects.map(function (obj, index) {
-        return {
-          id: Number(obj.id) || index + 1,
-          label: String(obj.label || "Furniture"),
-          shape: obj.shape === "ellipse" ? "ellipse" : "rect",
-          color: String(obj.color || "#3b82f6"),
-          widthInches: Math.max(1, (Number(obj.widthFt) || 1) * 12),
-          depthInches: Math.max(1, (Number(obj.lengthFt) || 1) * 12),
-          rotation: [0, 90, 180, 270].includes(Number(obj.rotation)) ? Number(obj.rotation) : 0,
-          sourceFurnitureName: null,
-          position: {
-            xRatio: clamp((Number(obj.x) || VIEWBOX_WIDTH / 2) / VIEWBOX_WIDTH, 0, 1),
-            yRatio: clamp((Number(obj.y) || VIEWBOX_HEIGHT / 2) / VIEWBOX_HEIGHT, 0, 1)
-          } // closes migrated v1 position
-        }; // closes migrated v1 furniture object
-      }) // closes migrated v1 object map
-    }; // closes migrated v1 configuration
-  } // closes v1 migration branch
-
-  if (raw.format === CONFIG_FORMAT && Number(raw.schemaVersion) > CONFIG_SCHEMA_VERSION) {
-    throw new Error("This configuration was created by a newer schema. Update the app before opening it.");
-  } // closes future configuration schema branch
-
-  throw new Error("Unsupported configuration format.");
-} // closes migrateConfig
-
-function applyConfiguration(raw) {
-  const data = migrateConfig(raw);
-  const scale = data.plan && data.plan.scale ? data.plan.scale : {};
-  const settings = data.settings || {};
-
-  byId("configurationName").value = String(data.name || "Untitled");
-  byId("ppfX").value = Math.max(1, Number(scale.xPixelsPerFoot) || 61.5);
-  byId("ppfY").value = Math.max(1, Number(scale.yPixelsPerFoot) || 54.5);
-
-  const moveInches = Math.max(0.25, Number(settings.movementInches) || 6);
-
-  byId("unitFeet").value = Math.floor(moveInches / 12);
-  byId("unitInches").value = Math.round((moveInches % 12) * 4) / 4;
-  byId("snapToggle").checked = settings.snapToGrid !== false;
-  byId("gridToggle").checked = settings.showGrid !== false;
-
-  const opacity = clamp(Number(settings.floorplanOpacity) || 0.72, 0, 1);
-
-  byId("opacitySlider").value = Math.round(opacity * 100);
-  byId("floorplan").style.opacity = String(opacity);
-
-  state.objects = (Array.isArray(data.objects) ? data.objects : []).map(function (obj, index) {
-    const position = obj.position || {};
-
-    return {
-      id: Number(obj.id) || index + 1,
-      label: String(obj.label || "Furniture"),
-      shape: obj.shape === "ellipse" ? "ellipse" : "rect",
-      color: String(obj.color || "#3b82f6"),
-      widthInches: Math.max(1, Number(obj.widthInches) || 12),
-      depthInches: Math.max(1, Number(obj.depthInches) || 12),
-      rotation: [0, 90, 180, 270].includes(Number(obj.rotation)) ? Number(obj.rotation) : 0,
-      xRatio: clamp(Number(position.xRatio) || 0.5, 0, 1),
-      yRatio: clamp(Number(position.yRatio) || 0.5, 0, 1),
-      sourceFurnitureName: obj.sourceFurnitureName ? String(obj.sourceFurnitureName) : null
-    }; // closes runtime layout object
-  }); // closes runtime layout object map
-
-  state.nextId = state.objects.reduce(function (maxId, obj) {
-    return Math.max(maxId, obj.id);
-  }, 0) + 1; // closes next-ID reduce
-
-  state.selectedId = null;
-  updateGrid();
-} // closes applyConfiguration
-
-function normalizeFurnitureLibraryData(raw) {
-  if (!raw || typeof raw !== "object") {
-    throw new Error("Furniture file is not a JSON object.");
-  } // closes invalid furniture raw branch
-
-  if (raw.format === FURNITURE_FORMAT && Number(raw.schemaVersion) === 1) {
-    const furniture = raw.furniture || {};
-
-    return {
-      format: FURNITURE_FORMAT,
-      schemaVersion: 1,
-      appVersion: String(raw.appVersion || APP_VERSION),
-      savedAt: String(raw.savedAt || ""),
-      name: String(raw.name || furniture.label || "Furniture"),
-      furniture: {
-        label: String(furniture.label || "Furniture"),
-        shape: furniture.shape === "ellipse" ? "ellipse" : "rect",
-        color: String(furniture.color || "#3b82f6"),
-        widthInches: Math.max(1, Number(furniture.widthInches) || 12),
-        depthInches: Math.max(1, Number(furniture.depthInches) || 12),
-        rotation: [0, 90, 180, 270].includes(Number(furniture.rotation)) ? Number(furniture.rotation) : 0
-      } // closes normalized furniture payload
-    }; // closes normalized furniture file
-  } // closes current furniture schema branch
-
-  if (raw.format === FURNITURE_FORMAT && Number(raw.schemaVersion) > FURNITURE_SCHEMA_VERSION) {
-    throw new Error("This furniture item was created by a newer schema. Update the app before opening it.");
-  } // closes future furniture schema branch
-
-  throw new Error("Unsupported furniture file format.");
-} // closes normalizeFurnitureLibraryData
-
-async function refreshConfigurations(selectName = null) {
-  const records = await storeGetAll(CONFIG_STORE);
-  const select = byId("configurationSelect");
-
-  select.replaceChildren();
-
-  records.sort(function (a, b) {
-    return a.name.localeCompare(b.name);
-  }); // closes configuration record sort
-
-  records.forEach(function (record) {
-    const option = document.createElement("option");
-
-    option.value = record.name;
-    option.textContent = record.name;
-    select.appendChild(option);
-  }); // closes configuration option loop
-
-  if (selectName) {
-    select.value = selectName;
-  } // closes requested configuration selection branch
-} // closes refreshConfigurations
-
-async function refreshFurnitureLibrary(selectName = null) {
-  const records = await storeGetAll(FURNITURE_STORE);
-  const select = byId("furnitureLibrarySelect");
-
-  select.replaceChildren();
-
-  records.sort(function (a, b) {
-    return a.name.localeCompare(b.name);
-  }); // closes furniture record sort
-
-  records.forEach(function (record) {
-    const option = document.createElement("option");
-
-    option.value = record.name;
-    option.textContent = record.name;
-    select.appendChild(option);
-  }); // closes furniture option loop
-
-  if (selectName) {
-    select.value = selectName;
-  } // closes requested furniture selection branch
-} // closes refreshFurnitureLibrary
-
-async function loadConfiguration() {
-  const name = byId("configurationSelect").value;
-
-  if (!name) {
-    announce("Choose a saved configuration.");
-    return;
-  } // closes missing configuration load name branch
-
-  try {
-    const record = await storeGet(CONFIG_STORE, name);
-
-    if (!record) {
-      throw new Error("Configuration was not found.");
-    } // closes missing configuration record branch
-
-    applyConfiguration(record.data);
-    state.loadedConfigName = name;
-    byId("configurationName").value = name;
-    announce("Loaded configuration " + name + " from this device.");
-  } catch (error) {
-    announce(error.message);
-  } // closes configuration load try/catch
-} // closes loadConfiguration
-
-async function saveConfiguration(forceSaveAs = false) {
-  const name = byId("configurationName").value.trim();
-
-  if (!name) {
-    announce("Enter a configuration name.");
-    byId("configurationName").focus();
-    return;
-  } // closes missing configuration save name branch
-
-  if (forceSaveAs) {
-    state.loadedConfigName = null;
-  } // closes configuration force-save-as branch
-
-  const data = configurationData();
-
-  data.name = name;
-
-  try {
-    await storePut(CONFIG_STORE, {
-      name: name,
-      modifiedAt: new Date().toISOString(),
-      data: data
-    }); // closes configuration record
-
-    state.loadedConfigName = name;
-    await refreshConfigurations(name);
-    announce("Saved configuration " + name + " on this device.");
-  } catch (error) {
-    announce(error.message);
-  } // closes configuration save try/catch
-} // closes saveConfiguration
-
-async function saveAsConfiguration() {
-  const proposed = byId("configurationName").value.trim() || "New configuration";
-  const name = window.prompt("Save as configuration name:", proposed);
-
-  if (name === null) {
-    return;
-  } // closes cancelled configuration Save As branch
-
-  byId("configurationName").value = name.trim();
-  await saveConfiguration(true);
-} // closes saveAsConfiguration
-
-async function deleteConfiguration() {
-  const name = byId("configurationSelect").value;
-
-  if (!name) {
-    announce("Choose a configuration to delete.");
-    return;
-  } // closes missing configuration delete name branch
-
-  if (!window.confirm("Delete configuration '" + name + "' from this device?")) {
-    return;
-  } // closes configuration delete confirmation branch
-
-  try {
-    await storeDelete(CONFIG_STORE, name);
-
-    if (state.loadedConfigName === name) {
-      state.loadedConfigName = null;
-    } // closes deleted loaded configuration branch
-
-    await refreshConfigurations();
-    announce("Deleted configuration " + name + " from this device.");
-  } catch (error) {
-    announce(error.message);
-  } // closes configuration delete try/catch
-} // closes deleteConfiguration
-
-async function readFurnitureLibraryItem(name) {
-  const record = await storeGet(FURNITURE_STORE, name);
-
-  if (!record) {
-    throw new Error("Furniture item was not found.");
-  } // closes missing furniture record branch
-
-  return normalizeFurnitureLibraryData(record.data);
-} // closes readFurnitureLibraryItem
-
-async function loadFurnitureIntoEditor() {
-  const name = byId("furnitureLibrarySelect").value;
-
-  if (!name) {
-    announce("Choose saved furniture first.");
-    return;
-  } // closes missing furniture load name branch
-
-  try {
-    const data = await readFurnitureLibraryItem(name);
-
-    state.loadedFurnitureName = name;
-    byId("furnitureLibraryName").value = name;
-    setEditorFurniture(data.furniture);
-    announce("Loaded reusable furniture " + name + " into the editor. No configuration was changed.");
-  } catch (error) {
-    announce(error.message);
-  } // closes furniture editor load try/catch
-} // closes loadFurnitureIntoEditor
-
-async function addLibraryFurnitureToLayout() {
-  const name = byId("furnitureLibrarySelect").value;
-
-  if (!name) {
-    announce("Choose saved furniture first.");
-    return;
-  } // closes missing library-add name branch
-
-  try {
-    const data = await readFurnitureLibraryItem(name);
-    const obj = createPlacedObject(data.furniture, name);
-
-    state.objects.push(obj);
-    state.selectedId = obj.id;
-    setEditorFurniture(obj);
-    renderObjects();
-    announce("Added a copy of " + name + " to the current layout.");
-  } catch (error) {
-    announce(error.message);
-  } // closes library-add try/catch
-} // closes addLibraryFurnitureToLayout
-
-async function saveFurnitureLibrary(forceSaveAs = false) {
-  const name = byId("furnitureLibraryName").value.trim();
-
-  if (!name) {
-    announce("Enter a furniture library name.");
-    byId("furnitureLibraryName").focus();
-    return;
-  } // closes missing furniture save name branch
-
-  if (forceSaveAs) {
-    state.loadedFurnitureName = null;
-  } // closes furniture force-save-as branch
-
-  try {
-    await storePut(FURNITURE_STORE, {
-      name: name,
-      modifiedAt: new Date().toISOString(),
-      data: furnitureLibraryData(name)
-    }); // closes furniture record
-
-    state.loadedFurnitureName = name;
-    await refreshFurnitureLibrary(name);
-    announce("Saved reusable furniture " + name + " on this device. Existing layout copies were not changed.");
-  } catch (error) {
-    announce(error.message);
-  } // closes furniture save try/catch
-} // closes saveFurnitureLibrary
-
-async function saveAsFurnitureLibrary() {
-  const proposed = byId("furnitureLibraryName").value.trim() || byId("labelInput").value.trim() || "Furniture";
-  const name = window.prompt("Save furniture as:", proposed);
-
-  if (name === null) {
-    return;
-  } // closes cancelled furniture Save As branch
-
-  byId("furnitureLibraryName").value = name.trim();
-  await saveFurnitureLibrary(true);
-} // closes saveAsFurnitureLibrary
-
-function captureSelectedFurniture() {
-  const obj = objectById(state.selectedId);
-
-  if (!obj) {
-    announce("Select furniture in the current layout first.");
-    return;
-  } // closes no selected capture branch
-
-  setEditorFurniture(obj);
-  byId("furnitureLibraryName").value = obj.label;
-  state.loadedFurnitureName = null;
-  announce("Captured " + obj.label + " into the editor. Use Save furniture as to make an independent reusable item.");
-} // closes captureSelectedFurniture
-
-async function deleteFurnitureLibrary() {
-  const name = byId("furnitureLibrarySelect").value;
-
-  if (!name) {
-    announce("Choose saved furniture to delete.");
-    return;
-  } // closes missing furniture delete name branch
-
-  if (!window.confirm("Delete reusable furniture '" + name + "' from this device? Existing copies in saved configurations remain.")) {
-    return;
-  } // closes furniture delete confirmation branch
-
-  try {
-    await storeDelete(FURNITURE_STORE, name);
-
-    if (state.loadedFurnitureName === name) {
-      state.loadedFurnitureName = null;
-    } // closes deleted loaded furniture branch
-
-    await refreshFurnitureLibrary();
-    announce("Deleted reusable furniture " + name + ". Existing layout copies were not changed.");
-  } catch (error) {
-    announce(error.message);
-  } // closes furniture delete try/catch
-} // closes deleteFurnitureLibrary
-
-function safeFileName(value) {
-  const cleaned = String(value || "planner-data")
-    .trim()
-    .replace(/[^a-z0-9 _.-]+/gi, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-");
-
-  return cleaned || "planner-data";
-} // closes safeFileName
-
-function downloadJson(fileName, data) {
-  const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
-    type: "application/json"
-  }); // closes download Blob options
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-
-  link.href = url;
-  link.download = fileName;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  window.setTimeout(function () {
-    URL.revokeObjectURL(url);
-  }, 1000); // closes download URL cleanup callback
-} // closes downloadJson
-
-async function exportSelectedConfiguration() {
-  const name = byId("configurationSelect").value || state.loadedConfigName;
-
-  if (!name) {
-    announce("Choose a saved configuration to export.");
-    return;
-  } // closes missing configuration export name branch
-
-  const record = await storeGet(CONFIG_STORE, name);
-
-  if (!record) {
-    announce("Configuration was not found.");
-    return;
-  } // closes missing configuration export record branch
-
-  downloadJson(safeFileName(name) + ".rowan-layout.json", record.data);
-  announce("Exported configuration " + name + ".");
-} // closes exportSelectedConfiguration
-
-async function exportSelectedFurniture() {
-  const name = byId("furnitureLibrarySelect").value || state.loadedFurnitureName;
-
-  if (!name) {
-    announce("Choose saved furniture to export.");
-    return;
-  } // closes missing furniture export name branch
-
-  const record = await storeGet(FURNITURE_STORE, name);
-
-  if (!record) {
-    announce("Furniture item was not found.");
-    return;
-  } // closes missing furniture export record branch
-
-  downloadJson(safeFileName(name) + ".rowan-furniture.json", record.data);
-  announce("Exported reusable furniture " + name + ".");
-} // closes exportSelectedFurniture
-
-async function readJsonFile(file) {
-  const text = await file.text();
-
-  return JSON.parse(text);
-} // closes readJsonFile
-
-async function importConfigurationFile(event) {
-  const file = event.target.files && event.target.files[0];
-
-  if (!file) {
-    return;
-  } // closes missing configuration import file branch
-
-  try {
-    const raw = await readJsonFile(file);
-    const data = migrateConfig(raw);
-    const name = String(data.name || file.name.replace(/\.json$/i, "") || "Imported configuration");
-
-    data.name = name;
-
-    await storePut(CONFIG_STORE, {
-      name: name,
-      modifiedAt: new Date().toISOString(),
-      data: data
-    }); // closes imported configuration record
-
-    await refreshConfigurations(name);
-    announce("Imported configuration " + name + " onto this device.");
-  } catch (error) {
-    announce("Could not import configuration: " + error.message);
-  } // closes configuration import try/catch
-
-  event.target.value = "";
-} // closes importConfigurationFile
-
-async function importFurnitureFile(event) {
-  const file = event.target.files && event.target.files[0];
-
-  if (!file) {
-    return;
-  } // closes missing furniture import file branch
-
-  try {
-    const raw = await readJsonFile(file);
-    const data = normalizeFurnitureLibraryData(raw);
-    const name = String(data.name || data.furniture.label || "Imported furniture");
-
-    data.name = name;
-
-    await storePut(FURNITURE_STORE, {
-      name: name,
-      modifiedAt: new Date().toISOString(),
-      data: data
-    }); // closes imported furniture record
-
-    await refreshFurnitureLibrary(name);
-    announce("Imported reusable furniture " + name + " onto this device.");
-  } catch (error) {
-    announce("Could not import furniture: " + error.message);
-  } // closes furniture import try/catch
-
-  event.target.value = "";
-} // closes importFurnitureFile
-
-async function exportFullBackup() {
-  const configurations = await storeGetAll(CONFIG_STORE);
-  const furniture = await storeGetAll(FURNITURE_STORE);
-
-  const backup = {
-    format: BACKUP_FORMAT,
-    schemaVersion: BACKUP_SCHEMA_VERSION,
-    appVersion: APP_VERSION,
-    exportedAt: new Date().toISOString(),
-    configurations: configurations.map(function (record) {
-      return record.data;
-    }), // closes backup configuration map
-    furniture: furniture.map(function (record) {
-      return record.data;
-    }) // closes backup furniture map
-  }; // closes backup object
-
-  const datePart = new Date().toISOString().slice(0, 10);
-
-  downloadJson("rowan-floor-planner-backup-" + datePart + ".json", backup);
-  announce("Exported full device backup with " + configurations.length + " configurations and " + furniture.length + " furniture items.");
-} // closes exportFullBackup
-
-async function importFullBackup(event) {
-  const file = event.target.files && event.target.files[0];
-
-  if (!file) {
-    return;
-  } // closes missing backup file branch
-
-  try {
-    const backup = await readJsonFile(file);
-
-    if (!backup || backup.format !== BACKUP_FORMAT || Number(backup.schemaVersion) !== BACKUP_SCHEMA_VERSION) {
-      throw new Error("This is not a supported Floor Planner device backup.");
-    } // closes unsupported backup branch
-
-    const configurations = Array.isArray(backup.configurations) ? backup.configurations : [];
-    const furniture = Array.isArray(backup.furniture) ? backup.furniture : [];
-
-    for (const rawConfig of configurations) {
-      const data = migrateConfig(rawConfig);
-      const name = String(data.name || "Imported configuration");
-
-      await storePut(CONFIG_STORE, {
-        name: name,
-        modifiedAt: new Date().toISOString(),
-        data: data
-      }); // closes restored configuration record
-    } // closes backup configuration restore loop
-
-    for (const rawFurniture of furniture) {
-      const data = normalizeFurnitureLibraryData(rawFurniture);
-      const name = String(data.name || data.furniture.label || "Imported furniture");
-
-      await storePut(FURNITURE_STORE, {
-        name: name,
-        modifiedAt: new Date().toISOString(),
-        data: data
-      }); // closes restored furniture record
-    } // closes backup furniture restore loop
-
-    await Promise.all([
-      refreshConfigurations(),
-      refreshFurnitureLibrary()
-    ]);
-
-    announce("Restored " + configurations.length + " configurations and " + furniture.length + " furniture items onto this device.");
-  } catch (error) {
-    announce("Could not restore backup: " + error.message);
-  } // closes backup import try/catch
-
-  event.target.value = "";
-} // closes importFullBackup
-
-async function clearDeviceData() {
-  if (!window.confirm("Clear ALL saved configurations and reusable furniture from this device? Export a backup first if you may need them later.")) {
-    return;
-  } // closes clear-data confirmation branch
-
-  try {
-    await clearAllStores();
-    state.loadedConfigName = null;
-    state.loadedFurnitureName = null;
-    await Promise.all([
-      refreshConfigurations(),
-      refreshFurnitureLibrary()
-    ]);
-    announce("All saved planner data was cleared from this device.");
-  } catch (error) {
-    announce(error.message);
-  } // closes clear-device-data try/catch
-} // closes clearDeviceData
-
-function getViewportSize() {
-  const viewport = window.visualViewport;
-
-  return {
-    width: Math.max(1, viewport ? viewport.width : window.innerWidth),
-    height: Math.max(1, viewport ? viewport.height : window.innerHeight)
-  }; // closes viewport size object
-} // closes getViewportSize
-
-function detectLayoutProfile() {
-  const size = getViewportSize();
-  const shortSide = Math.min(size.width, size.height);
-  const longSide = Math.max(size.width, size.height);
-
-  if (size.width >= 1180 && size.width >= size.height * 1.05) {
-    return "desktop";
-  } // closes desktop profile branch
-
-  if (shortSide >= 600 && longSide >= 760) {
-    return size.width < size.height ? "fold-portrait" : "fold-landscape";
-  } // closes fold/tablet profile branch
-
-  return "phone";
-} // closes detectLayoutProfile
-
-function compactControlPanels(profile) {
-  if (profile === "desktop") {
-    return;
-  } // closes desktop panel branch
-
-  const panels = Array.from(document.querySelectorAll(".control-panel"));
-
-  panels.forEach(function (panel, index) {
-    panel.open = index === 0;
-  }); // closes compact panel initialization loop
-} // closes compactControlPanels
-
-function updateAvailableAppHeight() {
-  const size = getViewportSize();
-  const header = document.querySelector("header");
-  const headerHeight = header ? header.getBoundingClientRect().height : 0;
-  const availableHeight = Math.max(240, size.height - headerHeight);
-
-  document.documentElement.style.setProperty("--app-available-height", availableHeight + "px");
-} // closes updateAvailableAppHeight
-
-function applyResponsiveLayout() {
-  const profile = detectLayoutProfile();
-  const changed = state.layoutProfile !== profile;
-
-  state.layoutProfile = profile;
-  document.body.dataset.layout = profile;
-  updateAvailableAppHeight();
-
-  const profileLabel = byId("layoutProfile");
-
-  if (profileLabel) {
-    const readable = {
-      "desktop": "Desktop layout.",
-      "fold-portrait": "Unfolded tablet/fold portrait layout.",
-      "fold-landscape": "Unfolded tablet/fold landscape layout.",
-      "phone": "Compact phone layout."
-    }; // closes readable profile map
-
-    profileLabel.textContent = readable[profile] || "";
-  } // closes profile label branch
-
-  if (changed) {
-    compactControlPanels(profile);
-  } // closes changed-profile branch
-
-  window.requestAnimationFrame(function () {
-    fitStageToViewport();
-
-    window.requestAnimationFrame(function () {
-      fitStageToViewport();
-    }); // closes second fit frame callback
-  }); // closes first fit frame callback
-} // closes applyResponsiveLayout
-
-function openControlPanel(panelId) {
-  const panel = byId(panelId);
-  const sidebar = byId("controlSidebar");
-
-  if (!panel || !sidebar) {
-    return;
-  } // closes missing control panel branch
-
-  if (state.layoutProfile !== "desktop") {
-    document.querySelectorAll(".control-panel").forEach(function (item) {
-      item.open = item === panel;
-    }); // closes compact panel close/open loop
-  } else {
-    panel.open = true;
-  } // closes control-panel profile branch
-
-  const jumpbar = sidebar.querySelector(".control-jumpbar");
-  const jumpHeight = jumpbar ? jumpbar.getBoundingClientRect().height : 0;
-  const targetTop = Math.max(0, panel.offsetTop - jumpHeight - 8);
-
-  sidebar.scrollTo({
-    top: targetTop,
-    behavior: "smooth"
-  }); // closes sidebar scroll options
-} // closes openControlPanel
-
-function wireControlJumpbar() {
-  document.querySelectorAll("[data-panel-target]").forEach(function (button) {
-    button.addEventListener("click", function () {
-      openControlPanel(button.getAttribute("data-panel-target"));
-    }); // closes jumpbar button click callback
-  }); // closes jumpbar button registration loop
-} // closes wireControlJumpbar
-
-function wireResponsiveLayout() {
-  let resizeTimer = null;
-
-  function scheduleResponsiveUpdate() {
-    if (resizeTimer) {
-      window.clearTimeout(resizeTimer);
-    } // closes existing resize timer branch
-
-    resizeTimer = window.setTimeout(function () {
-      applyResponsiveLayout();
-    }, 80); // closes resize timer callback
-  } // closes scheduleResponsiveUpdate
-
-  window.addEventListener("resize", scheduleResponsiveUpdate);
-  window.addEventListener("orientationchange", scheduleResponsiveUpdate);
-
-  if (window.visualViewport) {
-    window.visualViewport.addEventListener("resize", scheduleResponsiveUpdate);
-  } // closes visual viewport listener branch
-
-  if ("ResizeObserver" in window) {
-    const observer = new ResizeObserver(function () {
-      fitStageToViewport();
-    }); // closes stage resize observer callback
-
-    observer.observe(byId("stageViewport"));
-  } // closes ResizeObserver branch
-} // closes wireResponsiveLayout
-
-function wireButton(primaryId, mobileId, handler) {
-  byId(primaryId).addEventListener("click", handler);
-
-  if (mobileId) {
-    byId(mobileId).addEventListener("click", handler);
-  } // closes optional mobile-button branch
-} // closes wireButton
-
-byId("loadConfiguration").addEventListener("click", loadConfiguration);
-wireButton("saveConfiguration", "mobileSave", function () {
-  saveConfiguration(false);
-}); // closes configuration save wire callback
-byId("saveAsConfiguration").addEventListener("click", saveAsConfiguration);
-byId("deleteConfiguration").addEventListener("click", deleteConfiguration);
-byId("exportConfiguration").addEventListener("click", exportSelectedConfiguration);
-byId("importConfiguration").addEventListener("change", importConfigurationFile);
-
-wireButton("addLibraryFurniture", "mobileLibraryAdd", addLibraryFurnitureToLayout);
-byId("loadFurnitureEditor").addEventListener("click", loadFurnitureIntoEditor);
-byId("saveFurnitureLibrary").addEventListener("click", function () {
-  saveFurnitureLibrary(false);
-}); // closes furniture save click callback
-byId("saveAsFurnitureLibrary").addEventListener("click", saveAsFurnitureLibrary);
-byId("captureSelectedFurniture").addEventListener("click", captureSelectedFurniture);
-byId("deleteFurnitureLibrary").addEventListener("click", deleteFurnitureLibrary);
-byId("exportFurniture").addEventListener("click", exportSelectedFurniture);
-byId("importFurniture").addEventListener("change", importFurnitureFile);
-
-byId("addObject").addEventListener("click", addEditorFurniture);
-wireButton("applyObject", "mobileApply", applyObject);
-wireButton("rotateObject", "mobileRotate", rotateObject);
-wireButton("duplicateObject", "mobileDuplicate", duplicateObject);
-byId("deleteObject").addEventListener("click", deleteObject);
-
-byId("exportBackup").addEventListener("click", exportFullBackup);
-byId("importBackup").addEventListener("change", importFullBackup);
-byId("clearDeviceData").addEventListener("click", clearDeviceData);
-
-byId("objectList").addEventListener("change", function (event) {
-  selectObject(Number(event.target.value));
-}); // closes object-list change listener
-
-["unitFeet", "unitInches", "ppfX", "ppfY"].forEach(function (id) {
-  byId(id).addEventListener("change", updateGrid);
-}); // closes grid-change listener registration
-
-byId("snapToggle").addEventListener("change", updateGrid);
-byId("gridToggle").addEventListener("change", updateGrid);
-
-byId("opacitySlider").addEventListener("input", function () {
-  byId("floorplan").style.opacity = String(Number(byId("opacitySlider").value) / 100);
-}); // closes opacity listener
-
-byId("calibrateX").addEventListener("click", function () {
-  beginCalibration("x");
-}); // closes X calibration listener
-
-byId("calibrateY").addEventListener("click", function () {
-  beginCalibration("y");
-}); // closes Y calibration listener
-
-byId("overlay").addEventListener("pointermove", onOverlayPointerMove);
-byId("overlay").addEventListener("pointerup", onOverlayPointerUp);
-byId("overlay").addEventListener("pointercancel", onOverlayPointerUp);
-byId("overlay").addEventListener("click", onOverlayClick);
-byId("stageWrap").addEventListener("keydown", onStageKeyDown);
-
-byId("zoomRange").addEventListener("input", function () {
-  setZoom(byId("zoomRange").value);
-}); // closes zoom-range listener
-
-byId("zoomIn").addEventListener("click", function () {
-  setZoom(state.zoomPercent + 20);
-}); // closes zoom-in listener
-
-byId("zoomOut").addEventListener("click", function () {
-  setZoom(state.zoomPercent - 20);
-}); // closes zoom-out listener
-
-byId("fitView").addEventListener("click", function () {
-  state.zoomPercent = 100;
-  byId("zoomRange").value = "100";
-  byId("zoomValue").textContent = "100%";
-  fitStageToViewport();
-
-  byId("stageViewport").scrollTo({
-    left: 0,
-    top: 0,
-    behavior: "smooth"
-  }); // closes fit-view scroll options
-}); // closes fit-view listener
-
-async function registerServiceWorker() {
-  if (!("serviceWorker" in navigator)) {
-    return;
-  } // closes unsupported service-worker branch
-
-  try {
-    await navigator.serviceWorker.register("./service-worker.js", {
-      scope: "./"
-    }); // closes service-worker options
-  } catch (error) {
-    console.debug("Service worker registration failed.", error);
-  } // closes service-worker registration try/catch
-} // closes registerServiceWorker
-
-async function initialize() {
-  wireControlJumpbar();
-  wireResponsiveLayout();
-  applyResponsiveLayout();
-  updateGrid();
-  state.zoomPercent = 100;
-  byId("zoomRange").value = "100";
-  byId("zoomValue").textContent = "100%";
-  fitStageToViewport();
-
-  try {
-    await openDatabase();
-    await Promise.all([
-      refreshConfigurations(),
-      refreshFurnitureLibrary()
-    ]);
-  } catch (error) {
-    announce("Could not initialize device storage: " + error.message);
-    return;
-  } // closes storage initialization try/catch
-
-  await registerServiceWorker();
-  announce("Planner v6 ready. The map and controls automatically adapt to the current screen size.");
-} // closes initialize
-
+const APP_VERSION="7.0.0";
+const VIEWBOX_WIDTH=2020, VIEWBOX_HEIGHT=1900;
+const STORAGE_KEY="floor-planner-v7";
+const DEFAULT_FLOORPLAN="assets/floorplan.jpg";
+const COLORS=["#e53935","#fb8c00","#fdd835","#43a047","#00acc1","#1e88e5","#3949ab","#8e24aa","#d81b60","#f5f5f5"];
+const state={
+  configs:[],library:[],objects:[],selectedId:null,configName:"",
+  scaleInchesPerPlanUnit:null,gridInches:6,movementInches:6,snap:true,
+  gridVisible:true,majorGridVisible:true,zoom:100,fitW:320,fitH:300,
+  profile:"desktop",drag:null
+};
+
+const $=id=>document.getElementById(id);
+const clamp=(n,a,b)=>Math.max(a,Math.min(b,n));
+const uid=prefix=>prefix+"_"+Date.now().toString(36)+"_"+Math.random().toString(36).slice(2,8);
+function announce(msg){$("announce").textContent=msg; setTimeout(()=>{if($("announce").textContent===msg)$("announce").textContent=""},3500)}
+function parseInches(value){
+  const s=String(value??"").trim().toLowerCase().replace(/[″]/g,'"').replace(/[′]/g,"'");
+  if(!s)return NaN;
+  if(/^\d+(\.\d+)?$/.test(s))return Number(s)*12;
+  const feet=(s.match(/(\d+(?:\.\d+)?)\s*(?:'|ft|feet)/)||[])[1];
+  const inches=(s.match(/(\d+(?:\.\d+)?)\s*(?:"|in|inch|inches)/)||[])[1];
+  if(feet!==undefined||inches!==undefined)return Number(feet||0)*12+Number(inches||0);
+  const parts=s.split(/[\s-]+/).filter(Boolean);
+  if(parts.length===2&&parts.every(x=>!Number.isNaN(Number(x))))return Number(parts[0])*12+Number(parts[1]);
+  return NaN;
+}
+function formatInches(v){
+  v=Math.max(0,Number(v)||0); const ft=Math.floor(v/12), inch=Math.round((v-ft*12)*10)/10;
+  return ft?`${ft}' ${inch}"`:`${inch}"`;
+}
+function clone(o){return JSON.parse(JSON.stringify(o))}
+function saveLocal(){localStorage.setItem(STORAGE_KEY,JSON.stringify({version:APP_VERSION,configs:state.configs,library:state.library,settings:{scale:state.scaleInchesPerPlanUnit,grid:state.gridInches,movement:state.movementInches,snap:state.snap,gridVisible:state.gridVisible,majorGridVisible:state.majorGridVisible}}))}
+function loadLocal(){
+  try{
+    const d=JSON.parse(localStorage.getItem(STORAGE_KEY)||"null");
+    if(d){state.configs=d.configs||[];state.library=d.library||[];Object.assign(state,{scaleInchesPerPlanUnit:d.settings?.scale||null,gridInches:d.settings?.grid||6,movementInches:d.settings?.movement||6,snap:d.settings?.snap!==false,gridVisible:d.settings?.gridVisible!==false,majorGridVisible:d.settings?.majorGridVisible!==false})}
+  }catch(e){announce("Local data could not be read.")}
+}
+function screenSize(){const v=visualViewport;return{w:v?.width||innerWidth,h:v?.height||innerHeight}}
+function detectProfile(){
+  const {w,h}=screenSize(),short=Math.min(w,h),long=Math.max(w,h);
+  if(w>=1180&&w>h*1.05)return"desktop";
+  if(short>=600&&long>=760)return w<h?"fold-portrait":"fold-landscape";
+  return"phone";
+}
+function applyLayout(){
+  state.profile=detectProfile();document.body.dataset.layout=state.profile;
+  const size=screenSize(), header=document.querySelector(".topbar"), available=Math.max(240,size.h-(header?.getBoundingClientRect().height||0));
+  document.documentElement.style.setProperty("--app-available-height",available+"px");
+  $("layoutProfile").textContent=state.profile==="fold-portrait"?"Fold portrait":state.profile==="fold-landscape"?"Fold landscape":state.profile==="phone"?"Phone":"Desktop";
+  if(state.profile!=="desktop")document.querySelectorAll(".control-panel").forEach((p,i)=>p.open=i===0);
+  requestAnimationFrame(fitStage);
+}
+function fitStage(){
+  const vp=$("stageViewport"), aspect=VIEWBOX_WIDTH/VIEWBOX_HEIGHT;
+  if(!vp)return;
+  let w=Math.max(1,vp.clientWidth-4),h=w/aspect;
+  if(h>Math.max(1,vp.clientHeight-4)){h=vp.clientHeight-4;w=h*aspect}
+  state.fitW=Math.max(1,w);state.fitH=Math.max(1,h);
+  const z=state.zoom/100;$("stageWrap").style.width=state.fitW*z+"px";$("stageWrap").style.height=state.fitH*z+"px";
+  positionFloatingToolbar();
+}
+function setZoom(v){state.zoom=clamp(Number(v)||100,60,220);$("zoomRange").value=state.zoom;$("zoomValue").textContent=state.zoom+"%";fitStage()}
+function stageScale(){return state.scaleInchesPerPlanUnit||1}
+function planUnitsForInches(inches){return inches/stageScale()}
+function objectDimensions(o){return{w:planUnitsForInches(o.widthIn),h:planUnitsForInches(o.lengthIn)}}
+function createObject(data={}){
+  const o={id:uid("obj"),label:data.label||"Furniture",shape:data.shape||"rect",color:data.color||COLORS[5],widthIn:Number(data.widthIn)||72,lengthIn:Number(data.lengthIn)||36,x:Number(data.x)||500,y:Number(data.y)||500,rotation:Number(data.rotation)||0,libraryId:data.libraryId||null};
+  state.objects.push(o);selectObject(o.id);renderObjects();announce(`${o.label} added`);
+}
+function getSelected(){return state.objects.find(o=>o.id===state.selectedId)||null}
+function selectedToEditor(){
+  const o=getSelected();if(!o)return;
+  $("objectLabel").value=o.label;$("objectShape").value=o.shape;$("objectColor").value=o.color;$("objectWidth").value=formatInches(o.widthIn);$("objectLength").value=formatInches(o.lengthIn);$("objectRotation").value=o.rotation;
+}
+function editorData(){
+  const w=parseInches($("objectWidth").value),l=parseInches($("objectLength").value);
+  if(!Number.isFinite(w)||w<=0||!Number.isFinite(l)||l<=0){announce("Enter valid width and length, such as 7' 6\" and 3' 2\".");return null}
+  return{label:$("objectLabel").value.trim()||"Furniture",shape:$("objectShape").value,color:$("objectColor").value,widthIn:w,lengthIn:l,rotation:Number($("objectRotation").value)||0}
+}
+function updateEditor(){
+  const o=getSelected(),d=editorData();if(!o||!d)return;
+  Object.assign(o,d);renderObjects();saveLocal();announce(`${o.label} updated`)
+}
+function clearEditor(){$("objectLabel").value="";$("objectWidth").value="";$("objectLength").value="";$("objectRotation").value="0";state.selectedId=null;renderObjects()}
+function makeSvgEl(tag,attrs={}){const e=document.createElementNS("http://www.w3.org/2000/svg",tag);Object.entries(attrs).forEach(([k,v])=>e.setAttribute(k,v));return e}
+function renderObjects(){
+  const layer=$("objectsLayer");layer.replaceChildren();
+  state.objects.forEach(o=>{
+    const {w,h}=objectDimensions(o),g=makeSvgEl("g",{class:"furniture","data-id":o.id,transform:`translate(${o.x} ${o.y}) rotate(${o.rotation})`});
+    let shape;
+    if(o.shape==="circle"){const r=Math.min(w,h)/2;shape=makeSvgEl("circle",{cx:0,cy:0,r,fill:o.color,fillOpacity:.72,stroke:"#fff","stroke-width":3})}
+    else shape=makeSvgEl("rect",{x:-w/2,y:-h/2,width:w,height:h,rx:5,fill:o.color,fillOpacity:.72,stroke:"#fff","stroke-width":3});
+    g.append(shape);
+    const t=makeSvgEl("text",{class:"furniture-label","text-anchor":"middle","dominant-baseline":"middle",x:0,y:0});t.textContent=o.label;g.append(t);
+    g.addEventListener("pointerdown",e=>startDrag(e,o.id));g.addEventListener("click",e=>{e.stopPropagation();selectObject(o.id)});
+    layer.append(g);
+  });
+  renderSelection();renderPlacedList();positionFloatingToolbar()
+}
+function renderSelection(){
+  const layer=$("selectionLayer");layer.replaceChildren();const o=getSelected();
+  $("selectionStatus").textContent=o?`${o.label} • ${formatInches(o.widthIn)} × ${formatInches(o.lengthIn)} • ${Math.round(o.rotation)}°`:"No furniture selected";
+  if(!o){$("floatingToolbar").hidden=true;return}
+  const {w,h}=objectDimensions(o),g=makeSvgEl("g",{transform:`translate(${o.x} ${o.y}) rotate(${o.rotation})`});
+  if(o.shape==="circle"){const r=Math.min(w,h)/2;g.append(makeSvgEl("circle",{class:"selection-box",cx:0,cy:0,r:r+8}))}
+  else g.append(makeSvgEl("rect",{class:"selection-box",x:-w/2-8,y:-h/2-8,width:w+16,height:h+16,rx:8}));
+  layer.append(g);$("selectedObjectName").textContent=o.label;$("floatingToolbar").hidden=false
+}
+function clientToStage(e){
+  const r=$("stage").getBoundingClientRect();
+  return{x:(e.clientX-r.left)*VIEWBOX_WIDTH/r.width,y:(e.clientY-r.top)*VIEWBOX_HEIGHT/r.height}
+}
+function snapValue(v){
+  if(!state.snap)return v;
+  const units=planUnitsForInches(state.movementInches||6);
+  return Math.round(v/units)*units
+}
+function startDrag(e,id){
+  e.preventDefault();e.stopPropagation();selectObject(id);const o=getSelected(),p=clientToStage(e);
+  state.drag={id,dx:o.x-p.x,dy:o.y-p.y,pointer:e.pointerId};e.currentTarget.setPointerCapture?.(e.pointerId);
+  const move=ev=>{if(!state.drag||state.drag.pointer!==ev.pointerId)return;const q=clientToStage(ev);o.x=snapValue(q.x+state.drag.dx);o.y=snapValue(q.y+state.drag.dy);renderObjects()};
+  const up=ev=>{if(state.drag?.pointer===ev.pointerId){state.drag=null;saveLocal();document.removeEventListener("pointermove",move);document.removeEventListener("pointerup",up)}};
+  document.addEventListener("pointermove",move);document.addEventListener("pointerup",up)
+}
+function selectObject(id){state.selectedId=id;selectedToEditor();renderSelection();renderPlacedList();positionFloatingToolbar()}
+function positionFloatingToolbar(){
+  const bar=$("floatingToolbar"),o=getSelected();if(!o||bar.hidden)return;
+  const {w,h}=objectDimensions(o),p={x:o.x,y:o.y};const stage=$("stage").getBoundingClientRect(),wrap=$("stageWrap").getBoundingClientRect();
+  const sx=stage.width/VIEWBOX_WIDTH,sy=stage.height/VIEWBOX_HEIGHT;
+  const left=clamp((p.x+w/2)*sx-10,5,wrap.width-bar.offsetWidth-5),top=clamp((p.y-h/2)*sy-bar.offsetHeight-8,5,wrap.height-bar.offsetHeight-5);
+  bar.style.left=left+"px";bar.style.top=top+"px"
+}
+function rotateSelected(){const o=getSelected();if(!o)return;o.rotation=(o.rotation+90)%360;$("objectRotation").value=o.rotation;renderObjects();saveLocal()}
+function duplicateSelected(){const o=getSelected();if(!o)return;createObject({...clone(o),id:null,x:o.x+planUnitsForInches(state.movementInches),y:o.y+planUnitsForInches(state.movementInches),label:o.label+" copy"});saveLocal()}
+function deleteSelected(){const o=getSelected();if(!o)return;state.objects=state.objects.filter(x=>x.id!==o.id);state.selectedId=null;renderObjects();saveLocal();announce(`${o.label} deleted`)}
+function renderPlacedList(){
+  const s=$("placedSelect"),current=s.value;s.replaceChildren();
+  state.objects.forEach(o=>{const op=document.createElement("option");op.value=o.id;op.textContent=`${o.label} — ${formatInches(o.widthIn)} × ${formatInches(o.lengthIn)}`;s.append(op)});
+  if(state.objects.some(o=>o.id===current))s.value=current;else if(state.selectedId)s.value=state.selectedId
+}
+function renderLibrary(){
+  const s=$("librarySelect"),cur=s.value;s.replaceChildren();
+  state.library.forEach(f=>{const o=document.createElement("option");o.value=f.id;o.textContent=`${f.label} — ${formatInches(f.widthIn)} × ${formatInches(f.lengthIn)}`;s.append(o)});
+  if(state.library.some(x=>x.id===cur))s.value=cur
+}
+function addLibrary(){
+  const id=$("librarySelect").value,f=state.library.find(x=>x.id===id);if(!f){openPicker();return}
+  createObject({...clone(f),id:null,libraryId:f.id,x:500,y:500});saveLocal()
+}
+function saveSelectedToLibrary(){
+  const o=getSelected();if(!o){announce("Select furniture first.");return}
+  const f=clone(o);f.id=uid("lib");delete f.x;delete f.y;delete f.libraryId;state.library.push(f);renderLibrary();saveLocal();announce(`${f.label} saved to library`)
+}
+function editLibrary(){
+  const f=state.library.find(x=>x.id===$("librarySelect").value);if(!f)return;
+  $("objectLabel").value=f.label;$("objectShape").value=f.shape;$("objectColor").value=f.color;$("objectWidth").value=formatInches(f.widthIn);$("objectLength").value=formatInches(f.lengthIn);$("objectRotation").value=f.rotation||0;announce("Library item loaded into editor")
+}
+function deleteLibrary(){const id=$("librarySelect").value;if(!id)return;state.library=state.library.filter(f=>f.id!==id);renderLibrary();saveLocal()}
+function openPicker(){
+  const list=$("pickerList");list.replaceChildren();
+  if(!state.library.length){list.innerHTML='<p class="hint">No saved furniture yet. Create one below.</p>'}
+  state.library.forEach(f=>{const row=document.createElement("div");row.className="picker-item";row.innerHTML=`<div><strong>${f.label}</strong><div class="meta">${formatInches(f.widthIn)} × ${formatInches(f.lengthIn)}</div></div><button data-id="${f.id}" class="primary">Add</button>`;row.querySelector("button").onclick=()=>{const item=state.library.find(x=>x.id===f.id);createObject({...clone(item),id:null,x:500,y:500,libraryId:item.id});saveLocal();$("furniturePicker").hidden=true};list.append(row)});
+  $("furniturePicker").hidden=false
+}
+function newConfig(){state.objects=[];state.selectedId=null;$("configName").value="";renderObjects();announce("New empty layout")}
+function currentConfig(){return{name:state.configName||"Untitled layout",version:APP_VERSION,objects:clone(state.objects),settings:{scale:state.scaleInchesPerPlanUnit,grid:state.gridInches,movement:state.movementInches,snap:state.snap}}}
+function saveConfig(){
+  state.configName=$("configName").value.trim()||"Untitled layout";const c=currentConfig(),idx=state.configs.findIndex(x=>x.name===state.configName);
+  if(idx>=0)state.configs[idx]=c;else state.configs.push(c);renderConfigList();saveLocal();announce(`${state.configName} saved`)
+}
+function renderConfigList(){const s=$("configSelect"),cur=s.value;s.replaceChildren();state.configs.forEach(c=>{const o=document.createElement("option");o.value=c.name;o.textContent=c.name;s.append(o)});if(state.configs.some(c=>c.name===cur))s.value=cur}
+function loadConfig(){
+  const c=state.configs.find(x=>x.name===$("configSelect").value);if(!c)return;state.objects=clone(c.objects||[]);state.configName=c.name;$("configName").value=c.name;
+  if(c.settings){state.scaleInchesPerPlanUnit=c.settings.scale||state.scaleInchesPerPlanUnit;state.gridInches=c.settings.grid||6;state.movementInches=c.settings.movement||6;state.snap=c.settings.snap!==false}
+  syncControls();state.selectedId=null;renderObjects();announce(`${c.name} loaded`)
+}
+function deleteConfig(){const name=$("configSelect").value;if(!name)return;state.configs=state.configs.filter(c=>c.name!==name);renderConfigList();saveLocal();announce(`${name} deleted`)}
+function syncControls(){
+  $("snapToggle").checked=state.snap;$("snapToGrid").checked=state.snap;$("gridSpacing").value=String(state.gridInches);$("movementUnit").value=String(state.movementInches);$("gridVisible").checked=state.gridVisible;$("majorGridVisible").checked=state.majorGridVisible;updateGrid()
+}
+function updateGrid(){
+  const pxPerInch=state.scaleInchesPerPlanUnit?1/state.scaleInchesPerPlanUnit:1/0.25;
+  const minor=clamp(state.gridInches*pxPerInch,8,80),major=minor*5;
+  const minorPattern=$("gridPattern"),majorPattern=$("gridMajorPattern");minorPattern.setAttribute("width",minor);minorPattern.setAttribute("height",minor);minorPattern.querySelector("path").setAttribute("d",`M ${minor} 0 L 0 0 0 ${minor}`);
+  majorPattern.setAttribute("width",major);majorPattern.setAttribute("height",major);
+  $("gridMinor").style.display=state.gridVisible?"":"none";$("gridMajor").style.display=state.majorGridVisible?"":"none";
+}
+function updateScaleStatus(){
+  $("scaleStatus").textContent=state.scaleInchesPerPlanUnit?`Scale: ${state.scaleInchesPerPlanUnit.toFixed(3)} in/plan unit`:"Scale: not calibrated";
+  $("calibrationResult").textContent=state.scaleInchesPerPlanUnit?`1 plan unit = ${state.scaleInchesPerPlanUnit.toFixed(3)} real inches.`:"Not calibrated.";
+}
+function calibrate(){const real=parseInches($("knownDistance").value),plan=Number($("planDistance").value);if(!Number.isFinite(real)||real<=0||!Number.isFinite(plan)||plan<=0){announce("Enter both a real distance and plan distance.");return}state.scaleInchesPerPlanUnit=real/plan;updateScaleStatus();updateGrid();renderObjects();saveLocal();announce("Scale calibrated")}
+function resetScale(){state.scaleInchesPerPlanUnit=null;updateScaleStatus();updateGrid();renderObjects();saveLocal();announce("Scale reset")}
+function configDownload(name,data){const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+function readJson(file,cb){const r=new FileReader();r.onload=()=>{try{cb(JSON.parse(r.result))}catch(e){announce("That JSON file could not be read.")}};r.readAsText(file)}
+function exportBackup(){configDownload(`floor-planner-backup-${new Date().toISOString().slice(0,10)}.json`,{app:"Floor Planner",version:APP_VERSION,configs:state.configs,library:state.library,settings:{scale:state.scaleInchesPerPlanUnit,grid:state.gridInches,movement:state.movementInches,snap:state.snap,gridVisible:state.gridVisible,majorGridVisible:state.majorGridVisible}})}
+function exportConfig(){const c=currentConfig();configDownload(`${c.name.replace(/[^a-z0-9]+/gi,"-").toLowerCase()}.json`,c)}
+function exportFurniture(){const o=getSelected();if(!o){announce("Select furniture first.");return}configDownload(`${o.label.replace(/[^a-z0-9]+/gi,"-").toLowerCase()}.json`,o)}
+function importBackup(file){readJson(file,d=>{if(d.configs)state.configs=d.configs;if(d.library)state.library=d.library;if(d.settings){state.scaleInchesPerPlanUnit=d.settings.scale||null;state.gridInches=d.settings.grid||6;state.movementInches=d.settings.movement||6;state.snap=d.settings.snap!==false;state.gridVisible=d.settings.gridVisible!==false;state.majorGridVisible=d.settings.majorGridVisible!==false}saveLocal();renderAll();announce("Backup restored")})}
+function importConfig(file){readJson(file,d=>{const c=d.name?d:{name:"Imported layout",objects:d.objects||[]};state.configs=state.configs.filter(x=>x.name!==c.name);state.configs.push(c);renderConfigList();saveLocal();announce("Configuration imported")})}
+function importFurniture(file){readJson(file,d=>{const f={...d,id:uid("lib")};delete f.x;delete f.y;state.library.push(f);renderLibrary();saveLocal();announce("Furniture imported")})}
+function loadFloorplan(src){const img=$("floorplanImage");img.setAttribute("href",src);img.style.display="";localStorage.setItem("floorplan-image",src)}
+function resetFloorplan(){localStorage.removeItem("floorplan-image");$("floorplanImage").setAttribute("href",DEFAULT_FLOORPLAN);$("floorplanImage").style.display="";announce("Repository floor plan restored")}
+function renderAll(){renderConfigList();renderLibrary();syncControls();updateScaleStatus();renderObjects()}
+function openPanel(id){const p=$(id);if(!p)return;document.querySelectorAll(".control-panel").forEach(x=>{if(state.profile!=="desktop")x.open=x===p});p.open=true;p.scrollIntoView({behavior:"smooth",block:"start"})}
+function wire(){
+  $("addFurnitureButton").onclick=openPicker;$("mobileAdd").onclick=openPicker;$("pickerNew").onclick=()=>{$("furniturePicker").hidden=true;openPanel("editorPanel");clearEditor();$("objectLabel").focus()}
+  $("closePicker").onclick=()=>$("furniturePicker").hidden=true;$("helpButton").onclick=()=>$("gettingStarted").hidden=false;$("closeGettingStarted").onclick=()=>$("gettingStarted").hidden=true;$("startPlanning").onclick=()=>{$("gettingStarted").hidden=true;if($("dontShowGuide").checked)localStorage.setItem("fp-guide-seen","1")}
+  $("backupTopButton").onclick=()=>openPanel("backupPanel");$("fitView").onclick=()=>{state.zoom=100;fitStage();$("stageViewport").scrollTo({top:0,left:0,behavior:"smooth"})};$("zoomRange").oninput=e=>setZoom(e.target.value);$("zoomIn").onclick=()=>setZoom(state.zoom+10);$("zoomOut").onclick=()=>setZoom(state.zoom-10)
+  $("snapToggle").onchange=e=>{state.snap=e.target.checked;syncControls();saveLocal()};$("snapToGrid").onchange=e=>{state.snap=e.target.checked;syncControls();saveLocal()}
+  $("saveConfig").onclick=saveConfig;$("newConfig").onclick=newConfig;$("loadConfig").onclick=loadConfig;$("deleteConfig").onclick=deleteConfig
+  $("addLibraryFurniture").onclick=addLibrary;$("editLibraryFurniture").onclick=editLibrary;$("deleteLibraryFurniture").onclick=deleteLibrary
+  $("createFurniture").onclick=()=>{const d=editorData();if(!d)return;createObject(d);saveLocal()};$("updateFurniture").onclick=updateEditor;$("clearEditor").onclick=clearEditor;$("saveToLibrary").onclick=saveSelectedToLibrary
+  $("selectPlaced").onclick=()=>{if($("placedSelect").value)selectObject($("placedSelect").value)};$("duplicatePlaced").onclick=duplicateSelected;$("deletePlaced").onclick=deleteSelected;$("placedSelect").onchange=e=>{if(e.target.value)selectObject(e.target.value)}
+  $("gridVisible").onchange=e=>{state.gridVisible=e.target.checked;updateGrid();saveLocal()};$("majorGridVisible").onchange=e=>{state.majorGridVisible=e.target.checked;updateGrid();saveLocal()};$("gridSpacing").onchange=e=>{state.gridInches=Number(e.target.value);updateGrid();saveLocal()};$("movementUnit").onchange=e=>{state.movementInches=Number(e.target.value);saveLocal()}
+  $("calibrateScale").onclick=calibrate;$("resetScale").onclick=resetScale
+  $("exportBackup").onclick=exportBackup;$("exportConfig").onclick=exportConfig;$("exportFurniture").onclick=exportFurniture
+  $("importBackup").onchange=e=>e.target.files[0]&&importBackup(e.target.files[0]);$("importConfig").onchange=e=>e.target.files[0]&&importConfig(e.target.files[0]);$("importFurniture").onchange=e=>e.target.files[0]&&importFurniture(e.target.files[0])
+  $("floorplanUpload").onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>loadFloorplan(r.result);r.readAsDataURL(f)};$("resetFloorplan").onclick=resetFloorplan
+  $("floatingToolbar").addEventListener("click",e=>{const a=e.target.dataset.action;if(a==="rotate")rotateSelected();if(a==="edit"){openPanel("editorPanel");selectedToEditor()}if(a==="duplicate")duplicateSelected();if(a==="delete")deleteSelected()})
+  $("mobileEdit").onclick=()=>{openPanel("editorPanel");selectedToEditor()};$("mobileRotate").onclick=rotateSelected;$("mobileDuplicate").onclick=duplicateSelected;$("mobileDelete").onclick=deleteSelected
+  document.querySelectorAll("[data-panel-target]").forEach(b=>b.onclick=()=>openPanel(b.dataset.panelTarget))
+  $("stage").addEventListener("click",()=>{state.selectedId=null;renderSelection();renderPlacedList()})
+  addEventListener("resize",()=>{clearTimeout(window._fpResize);window._fpResize=setTimeout(applyLayout,80)});addEventListener("orientationchange",applyLayout);visualViewport?.addEventListener("resize",()=>{clearTimeout(window._fpVV);window._fpVV=setTimeout(applyLayout,80)})
+}
+function initialize(){
+  loadLocal();wire();applyLayout();renderAll();
+  const savedFloor=localStorage.getItem("floorplan-image");if(savedFloor)loadFloorplan(savedFloor);else resetFloorplan();
+  if(!localStorage.getItem("fp-guide-seen"))$("gettingStarted").hidden=false;
+  announce("Ready. Tap ＋ Furniture to begin.");
+}
 initialize();

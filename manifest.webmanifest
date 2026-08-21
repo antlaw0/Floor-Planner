@@ -1,22 +1,9 @@
 {
-  "name": "Rowan Furniture Planner",
+  "name": "Floor Planner",
   "short_name": "Floor Planner",
   "start_url": "./",
-  "scope": "./",
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#000000",
-  "description": "Furniture planner for the Rowan Chestnut A6 apartment.",
-  "icons": [
-    {
-      "src": "./assets/icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png"
-    },
-    {
-      "src": "./assets/icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png"
-    }
-  ]
+  "icons": []
 }
