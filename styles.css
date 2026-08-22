@@ -654,3 +654,44 @@ body[data-layout="phone"] .selected-furniture-toolbar strong {
   flex-basis: 100%;
   max-width: 100%;
 } /* closes phone selected toolbar name */
+
+
+/* Light theme accessibility refinements */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible,
+.file-button:focus-within {
+  outline: 3px solid #000;
+  outline-offset: 2px;
+}
+
+a {
+  color: #000;
+}
+
+.modal-backdrop button,
+.sidebar button,
+.workspace-toolbar button,
+.mobile-actions button {
+  color: #000;
+}
+
+.floating-toolbar {
+  color: #000;
+}
+
+.floating-toolbar button {
+  color: #000;
+}
+
+.topbar,
+.sidebar,
+.workspace,
+.stage-viewport,
+.modal,
+.control-jumpbar,
+details,
+summary {
+  color: #000;
+}
